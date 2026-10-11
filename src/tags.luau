@@ -25,8 +25,8 @@ end
 --- A tag as jess displays one: printable ASCII as is, every other byte as `\xNN`.
 local function display(tag: number): string
   local out = ''
-  for i = 0, 3 do
-    local byte = bit32.extract(tag, i * 8, 8)
+  for index = 0, 3 do
+    local byte = bit32.extract(tag, index * 8, 8)
     if byte >= 0x20 and byte <= 0x7e then
       out ..= string.char(byte)
     else
@@ -39,8 +39,8 @@ end
 
 --- Whether every byte of the tag is printable ASCII or a space.
 local function isText(tag: number): boolean
-  for i = 0, 3 do
-    local byte = bit32.extract(tag, i * 8, 8)
+  for index = 0, 3 do
+    local byte = bit32.extract(tag, index * 8, 8)
     if byte < 0x20 or byte > 0x7e then return false end
   end
 
@@ -53,8 +53,8 @@ local function lossy(tag: number): string
   if utf8.len(text) then return text end
 
   local out = ''
-  for i = 1, 4 do
-    local byte = string.byte(text, i)
+  for index = 1, 4 do
+    local byte = string.byte(text, index)
     out ..= if byte < 0x80 then string.char(byte) else '\u{FFFD}'
   end
 

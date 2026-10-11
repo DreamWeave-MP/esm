@@ -35,9 +35,9 @@ end
 --- Where the first byte in `[from, to)` that is a NUL or over 0x7f is, or `to`: four bytes at a
 --- time, a word with neither going by in a handful of native instructions.
 local function plainUntil(source: buffer, from: number, to: number): number
-  local i = from
-  while i + 4 <= to do
-    local word = buffer.readu32(source, i)
+  local position = from
+  while position + 4 <= to do
+    local word = buffer.readu32(source, position)
     -- A high bit set, or a zero byte (the classic `(x - 0x01010101) & ~x & 0x80808080`).
     if
       bit32.btest(bit32.bor(word, bit32.band(word - 0x01010101, bit32.bnot(word))), 0x80808080)
@@ -45,14 +45,14 @@ local function plainUntil(source: buffer, from: number, to: number): number
       break
     end
 
-    i += 4
+    position += 4
   end
 
-  while i < to do
-    local byte = buffer.readu8(source, i)
-    if byte == 0 or byte >= 0x80 then return i end
+  while position < to do
+    local byte = buffer.readu8(source, position)
+    if byte == 0 or byte >= 0x80 then return position end
 
-    i += 1
+    position += 1
   end
 
   return to
@@ -79,17 +79,17 @@ end
 
 --- Whether `[from, to)` is all ASCII.
 local function ascii(source: buffer, from: number, to: number): boolean
-  local i = from
-  while i + 4 <= to do
-    if bit32.btest(buffer.readu32(source, i), 0x80808080) then return false end
+  local position = from
+  while position + 4 <= to do
+    if bit32.btest(buffer.readu32(source, position), 0x80808080) then return false end
 
-    i += 4
+    position += 4
   end
 
-  while i < to do
-    if buffer.readu8(source, i) >= 0x80 then return false end
+  while position < to do
+    if buffer.readu8(source, position) >= 0x80 then return false end
 
-    i += 1
+    position += 1
   end
 
   return true
@@ -146,16 +146,16 @@ local function camelCase(name: string): string
   if not string.find(name, '[_%-]') then return name end
 
   local out = {}
-  local i = 1
-  while i <= #name do
-    local character = string.sub(name, i, i)
-    local after = string.sub(name, i + 1, i + 1)
+  local position = 1
+  while position <= #name do
+    local character = string.sub(name, position, position)
+    local after = string.sub(name, position + 1, position + 1)
     if (character == '_' or character == '-') and #out > 0 and string.find(after, '^%l') then
       table.insert(out, string.upper(after))
-      i += 2
+      position += 2
     else
       table.insert(out, character)
-      i += 1
+      position += 1
     end
   end
 

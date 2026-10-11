@@ -33,8 +33,8 @@ end
 --- An enum whose variants are consecutive values from `first`.
 local function run(name: string, first: number, variants: { string }): Enum
   local pairs = {}
-  for i, variant in variants do
-    pairs[first + i - 1] = variant
+  for ordinal, variant in variants do
+    pairs[first + ordinal - 1] = variant
   end
 
   return enum(name, variants[1], pairs)
@@ -310,9 +310,9 @@ do
   }
   -- `00` to `73`: two ASCII digits, read as a little-endian u16.
 
-  for i, variant in named do
-    local n = i - 1
-    FilterFunctions[(48 + n // 10) + (48 + n % 10) * 256] = variant
+  for ordinal, variant in named do
+    local functionIndex = ordinal - 1
+    FilterFunctions[(48 + functionIndex // 10) + (48 + functionIndex % 10) * 256] = variant
   end
 
   for _, pair in
@@ -481,15 +481,17 @@ local Enums = table.freeze {
 }
 
 --- `value`'s variant name, or the enum's default for a value no variant has.
-local function nameOf(e: Enum, value: number): string return e.names[value] or e.default end
+local function nameOf(enumeration: Enum, value: number): string
+  return enumeration.names[value] or enumeration.default
+end
 
 --- The value variant `name` stands for; an error naming the enum for anything else.
-local function valueOf(e: Enum, name: unknown, field: string): number
-  local value = if type(name) == 'string' then e.values[name] else nil
+local function valueOf(enumeration: Enum, name: unknown, field: string): number
+  local value = if type(name) == 'string' then enumeration.values[name] else nil
   if value then return value end
 
   local variants = {}
-  for variant in e.values do
+  for variant in enumeration.values do
     table.insert(variants, variant)
   end
 

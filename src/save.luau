@@ -217,60 +217,67 @@ local ShortStringFlag = 0x20
 local CustomFullFlag = 0x40
 local CustomCompactFlag = 0x80
 
-type Cursor = { b: buffer, p: number, e: number, base: number }
+type Cursor = { source: buffer, position: number, finish: number, base: number }
 
-local function need(c: Cursor, n: number): number
-  local at = c.p
-  if at + n > c.e then fail(at - c.base, 'unexpected end of serialized Lua data') end
+local function need(cursor: Cursor, length: number): number
+  local at = cursor.position
+  if at + length > cursor.finish then
+    fail(at - cursor.base, 'unexpected end of serialized Lua data')
+  end
 
-  c.p = at + n
+  cursor.position = at + length
   return at
 end
 
-local function f64s(c: Cursor, n: number): { number }
-  local values = table.create(n, 0)
-  for k = 1, n do
-    values[k] = buffer.readf64(c.b, need(c, 8))
+local function f64s(cursor: Cursor, count: number): { number }
+  local values = table.create(count, 0)
+  for index = 1, count do
+    values[index] = buffer.readf64(cursor.source, need(cursor, 8))
   end
 
   return values
 end
 
-local function ref(c: Cursor, at: number, length: number, what: string): LuaRef
-  if length ~= 8 then fail(at - c.base, what) end
+local function ref(cursor: Cursor, at: number, length: number, what: string): LuaRef
+  if length ~= 8 then fail(at - cursor.base, what) end
 
-  return { index = buffer.readu32(c.b, at), contentFile = buffer.readi32(c.b, at + 4) }
+  return {
+    index = buffer.readu32(cursor.source, at),
+    contentFile = buffer.readi32(cursor.source, at + 4),
+  }
 end
 
-local decodeValue: (c: Cursor) -> LuaValue
+local decodeValue: (cursor: Cursor) -> LuaValue
 
-local function decodeUserdata(c: Cursor, tag: number): LuaValue
+local function decodeUserdata(cursor: Cursor, tag: number): LuaValue
   local compact = bit32.btest(tag, CustomCompactFlag)
   local dataLength: number = if compact
     then bit32.band(bit32.rshift(tag, 3), 15)
-    else buffer.readu32(c.b, need(c, 4))
+    else buffer.readu32(cursor.source, need(cursor, 4))
   local nameLength: number = if compact then bit32.band(tag, 7) + 1 else bit32.band(tag, 63) + 1
 
-  local nameAt = need(c, nameLength)
-  local typeName = buffer.readstring(c.b, nameAt, nameLength)
-  if not utf8.len(typeName) then fail(nameAt - c.base, 'Lua userdata type name is not UTF-8') end
+  local nameAt = need(cursor, nameLength)
+  local typeName = buffer.readstring(cursor.source, nameAt, nameLength)
+  if not utf8.len(typeName) then
+    fail(nameAt - cursor.base, 'Lua userdata type name is not UTF-8')
+  end
 
-  local dataAt = need(c, dataLength)
+  local dataAt = need(cursor, dataLength)
   if typeName == 'o' then
     return {
       kind = 'object',
-      ref = ref(c, dataAt, dataLength, 'Lua object userdata payload is not 8 bytes'),
+      ref = ref(cursor, dataAt, dataLength, 'Lua object userdata payload is not 8 bytes'),
     }
   end
 
   if typeName == 'objlist' then
     if dataLength % 8 ~= 0 then
-      fail(dataAt - c.base, 'Lua object-list userdata payload length is not a multiple of 8')
+      fail(dataAt - cursor.base, 'Lua object-list userdata payload length is not a multiple of 8')
     end
 
     local refs = {}
-    for k = 0, dataLength // 8 - 1 do
-      table.insert(refs, ref(c, dataAt + k * 8, 8, ''))
+    for index = 0, dataLength // 8 - 1 do
+      table.insert(refs, ref(cursor, dataAt + index * 8, 8, ''))
     end
 
     return { kind = 'objectList', refs = refs }
@@ -279,65 +286,79 @@ local function decodeUserdata(c: Cursor, tag: number): LuaValue
   return {
     kind = 'userdata',
     typeName = typeName,
-    data = buffer.readstring(c.b, dataAt, dataLength),
+    data = buffer.readstring(cursor.source, dataAt, dataLength),
   }
 end
 
-decodeValue = function(c: Cursor): LuaValue
-  local tag = buffer.readu8(c.b, need(c, 1))
-  if bit32.btest(tag, CustomCompactFlag + CustomFullFlag) then return decodeUserdata(c, tag) end
+decodeValue = function(cursor: Cursor): LuaValue
+  local tag = buffer.readu8(cursor.source, need(cursor, 1))
+  if bit32.btest(tag, CustomCompactFlag + CustomFullFlag) then
+    return decodeUserdata(cursor, tag)
+  end
 
   if bit32.btest(tag, ShortStringFlag) then
     local length = bit32.band(tag, 0x1f)
-    return { kind = 'string', value = buffer.readstring(c.b, need(c, length), length) }
+    return {
+      kind = 'string',
+      value = buffer.readstring(cursor.source, need(cursor, length), length),
+    }
   end
 
-  if tag == 0x0 then return { kind = 'number', value = buffer.readf64(c.b, need(c, 8)) } end
+  if tag == 0x0 then
+    return { kind = 'number', value = buffer.readf64(cursor.source, need(cursor, 8)) }
+  end
 
   if tag == 0x1 then
-    local length = buffer.readu32(c.b, need(c, 4))
-    return { kind = 'string', value = buffer.readstring(c.b, need(c, length), length) }
+    local length = buffer.readu32(cursor.source, need(cursor, 4))
+    return {
+      kind = 'string',
+      value = buffer.readstring(cursor.source, need(cursor, length), length),
+    }
   end
 
-  if tag == 0x2 then return { kind = 'boolean', value = buffer.readu8(c.b, need(c, 1)) ~= 0 } end
+  if tag == 0x2 then
+    return { kind = 'boolean', value = buffer.readu8(cursor.source, need(cursor, 1)) ~= 0 }
+  end
 
   if tag == 0x3 then
     local entries = {}
     while true do
-      if c.p >= c.e then fail(c.p - c.base, 'unexpected end of serialized Lua table') end
+      if cursor.position >= cursor.finish then
+        fail(cursor.position - cursor.base, 'unexpected end of serialized Lua table')
+      end
 
-      if buffer.readu8(c.b, c.p) == 0x4 then
-        c.p += 1
+      if buffer.readu8(cursor.source, cursor.position) == 0x4 then
+        cursor.position += 1
         return { kind = 'table', entries = entries }
       end
 
-      local key = decodeValue(c)
-      table.insert(entries, { key = key, value = decodeValue(c) })
+      local key = decodeValue(cursor)
+      table.insert(entries, { key = key, value = decodeValue(cursor) })
     end
   end
 
-  if tag == 0x4 then fail(c.p - 1 - c.base, 'unexpected Lua table end marker') end
+  if tag == 0x4 then fail(cursor.position - 1 - cursor.base, 'unexpected Lua table end marker') end
 
-  if tag == 0x10 then return { kind = 'vec2', values = f64s(c, 2) } end
+  if tag == 0x10 then return { kind = 'vec2', values = f64s(cursor, 2) } end
 
-  if tag == 0x11 then return { kind = 'vec3', values = f64s(c, 3) } end
+  if tag == 0x11 then return { kind = 'vec3', values = f64s(cursor, 3) } end
 
-  if tag == 0x12 then return { kind = 'transformM', values = f64s(c, 16) } end
+  if tag == 0x12 then return { kind = 'transformM', values = f64s(cursor, 16) } end
 
-  if tag == 0x13 then return { kind = 'transformQ', values = f64s(c, 4) } end
+  if tag == 0x13 then return { kind = 'transformQ', values = f64s(cursor, 4) } end
 
-  if tag == 0x14 then return { kind = 'vec4', values = f64s(c, 4) } end
+  if tag == 0x14 then return { kind = 'vec4', values = f64s(cursor, 4) } end
 
   if tag == 0x15 then
     local values = table.create(4, 0)
-    for k = 1, 4 do
-      values[k] = buffer.readf32(c.b, need(c, 4))
+    for index = 1, 4 do
+      values[index] = buffer.readf32(cursor.source, need(cursor, 4))
     end
 
     return { kind = 'color', values = values }
   end
 
-  return fail(c.p - 1 - c.base, `unknown Lua serialization tag {tag}`)
+  return fail(cursor.position - 1 - cursor.base, `unknown Lua serialization tag {tag}`)
 end
 
 --- A LUAD payload (`length` bytes of `source` at `offset`) decoded; an empty one is Lua nil, as
@@ -345,14 +366,17 @@ end
 local function decodeLuaData(source: buffer, offset: number, length: number): LuaValue
   if length == 0 then return { kind = 'nil' } end
 
-  local c: Cursor = { b = source, p = offset, e = offset + length, base = offset }
-  local version = buffer.readu8(source, need(c, 1))
+  local cursor: Cursor =
+    { source = source, position = offset, finish = offset + length, base = offset }
+  local version = buffer.readu8(source, need(cursor, 1))
   if version ~= FormatVersion then
     fail(0, `unsupported Lua serialization format version {version}`)
   end
 
-  local value = decodeValue(c)
-  if c.p ~= c.e then fail(c.p - offset, 'unexpected data after serialized Lua object') end
+  local value = decodeValue(cursor)
+  if cursor.position ~= cursor.finish then
+    fail(cursor.position - offset, 'unexpected data after serialized Lua object')
+  end
 
   return value
 end
@@ -390,8 +414,8 @@ local function encodeValue(value: LuaValue, out: { string })
     if value.ref then refs = { value.ref } end
 
     local parts: { string } = {}
-    for _, r in refs do
-      table.insert(parts, string.pack('<I4i4', r.index, r.contentFile))
+    for _, reference in refs do
+      table.insert(parts, string.pack('<I4i4', reference.index, reference.contentFile))
     end
 
     local typeName = if kind == 'object'
@@ -408,14 +432,14 @@ local function encodeValue(value: LuaValue, out: { string })
     table.insert(out, data)
   elseif kind == 'color' then
     table.insert(out, '\21')
-    for _, v in value.values or {} do
-      table.insert(out, string.pack('<f', v))
+    for _, component in value.values or {} do
+      table.insert(out, string.pack('<f', component))
     end
   else
     local tag = VectorTags[kind] or error(`unknown Lua value kind '{kind}'`, 0)
     table.insert(out, string.char(tag))
-    for _, v in value.values or {} do
-      table.insert(out, string.pack('<d', v))
+    for _, component in value.values or {} do
+      table.insert(out, string.pack('<d', component))
     end
   end
 end
@@ -439,8 +463,8 @@ local function luaRefs(value: LuaValue, out: { LuaRef }?): { LuaRef }
 
   if value.ref then table.insert(refs, value.ref) end
 
-  for _, r in value.refs or {} do
-    table.insert(refs, r)
+  for _, reference in value.refs or {} do
+    table.insert(refs, reference)
   end
 
   return refs
@@ -467,13 +491,13 @@ export type Profile = {
   maximumHealth: number?,
 }
 
-local SAVE = Tags.code 'SAVE'
-local SCRN = Tags.code 'SCRN'
+local SaveTag = Tags.code 'SAVE'
+local ScrnTag = Tags.code 'SCRN'
 
 --- The SAVE record's index.
 local function saveRecord(plugin: Plugin): number
-  for i = 0, plugin:count() - 1 do
-    if plugin:code(i) == SAVE then return i end
+  for index = 0, plugin:count() - 1 do
+    if plugin:code(index) == SaveTag then return index end
   end
 
   return fail(0, 'OpenMW save has no SAVE record')
@@ -588,7 +612,7 @@ end
 --- The screenshot's bytes (a JPEG), from SAVE's SCRN.
 local function screenshot(plugin: Plugin): buffer
   local index = saveRecord(plugin)
-  local source, at, size = plugin:findSubrecord(index, SCRN)
+  local source, at, size = plugin:findSubrecord(index, ScrnTag)
   if not source then fail(plugin:range(index), 'SAVE has no SCRN subrecord') end
 
   local out = buffer.create(size)

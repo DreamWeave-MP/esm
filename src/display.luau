@@ -90,12 +90,12 @@ local function emptyOrUnset(value: unknown): boolean
   if type(value) == 'string' then return value == '' end
 
   if type(value) == 'table' then
-    local t = value :: { [unknown]: unknown }
-    if next(t) == nil then return true end
+    local members = value :: { [unknown]: unknown }
+    if next(members) == nil then return true end
 
-    if t[1] == nil then return false end
+    if members[1] == nil then return false end
 
-    for _, item in t :: { unknown } do
+    for _, item in members :: { unknown } do
       if not unsetFloat(item) then return false end
     end
 
@@ -118,9 +118,9 @@ local function tidyField(key: string, value: unknown): unknown
     end
 
     local out = table.create(#items)
-    for i, item in items do
+    for index, item in items do
       local pair = item :: { unknown }
-      out[i] = { [names[1]] = pair[1], [names[2]] = pair[2] }
+      out[index] = { [names[1]] = pair[1], [names[2]] = pair[2] }
     end
 
     return out
@@ -133,8 +133,8 @@ local function tidyField(key: string, value: unknown): unknown
   if not named then return items end
 
   local out: { [string]: unknown } = {}
-  for i, name in named do
-    out[name] = items[i]
+  for index, name in named do
+    out[name] = items[index]
   end
 
   return out
@@ -158,22 +158,22 @@ tidy = function(value: unknown): unknown
 
   if type(value) ~= 'table' then return value end
 
-  local t = value :: { [unknown]: unknown }
-  if isList(t) then
-    local items = t :: { unknown }
-    for i = 1, #items do
-      items[i] = tidy(items[i])
+  local members = value :: { [unknown]: unknown }
+  if isList(members) then
+    local items = members :: { unknown }
+    for index = 1, #items do
+      items[index] = tidy(items[index])
     end
 
     return items
   end
 
-  for key, field in t do
+  for key, field in members do
     local tidied = tidyField(key :: string, tidy(field))
-    t[key] = if emptyOrUnset(tidied) then nil else tidied
+    members[key] = if emptyOrUnset(tidied) then nil else tidied
   end
 
-  return t
+  return members
 end
 
 --[[ Lua values ]]
@@ -240,8 +240,8 @@ luaValue = function(value: LuaValue, keepKeys: boolean?): unknown
 
     if list then
       local out = table.create(#entries)
-      for i, entry in entries do
-        out[i] = luaValue(entry.value, keepKeys)
+      for index, entry in entries do
+        out[index] = luaValue(entry.value, keepKeys)
       end
 
       return out
@@ -278,8 +278,8 @@ luaValue = function(value: LuaValue, keepKeys: boolean?): unknown
   end
 
   local out = {}
-  for i, v in value.values or {} do
-    out[i] = luaNumber(v)
+  for index, component in value.values or {} do
+    out[index] = luaNumber(component)
   end
 
   return { [Vectors[kind]] = out }
@@ -301,12 +301,12 @@ end
 
 --[[ Records ]]
 
-local SCVR, SCDT = Tags.code 'SCVR', Tags.code 'SCDT'
+local ScvrTag, ScdtTag = Tags.code 'SCVR', Tags.code 'SCDT'
 
 --- mwscript's NUL-separated variable names, grouped into shorts, longs, and floats when the
 --- header's counts add up, else as a list; nil when there are none.
 local function scriptVariables(plugin: Plugin, index: number, counts: { number }): unknown
-  local source, at, size = plugin:findSubrecord(index, SCVR)
+  local source, at, size = plugin:findSubrecord(index, ScvrTag)
   if not source then return nil end
 
   local names = {}
@@ -321,9 +321,9 @@ local function scriptVariables(plugin: Plugin, index: number, counts: { number }
 
   local grouped: { [string]: { string } } = {}
   local first = 1
-  for i, kind in { 'shorts', 'longs', 'floats' } do
-    local group = table.move(names, first, first + counts[i] - 1, 1, {})
-    first += counts[i]
+  for ordinal, kind in { 'shorts', 'longs', 'floats' } do
+    local group = table.move(names, first, first + counts[ordinal] - 1, 1, {})
+    first += counts[ordinal]
     if #group > 0 then grouped[kind] = group end
   end
 
@@ -377,7 +377,7 @@ local function recordValue(plugin: Plugin, index: number, decoded: Value): { [st
     fields.header = nil
     fields.variables =
       scriptVariables(plugin, index, { header.numShorts, header.numLongs, header.numFloats })
-    local _, _, size = plugin:findSubrecord(index, SCDT)
+    local _, _, size = plugin:findSubrecord(index, ScdtTag)
     fields.bytecode = `{size} bytes`
   elseif kind == 'Landscape' then
     for _, blob in LandBlobs do
@@ -399,14 +399,14 @@ local function recordValue(plugin: Plugin, index: number, decoded: Value): { [st
       return luaPayload(source, span[1], span[2])
     end
 
-    for s, script in (fields.scripts :: { { [string]: unknown } }?) or {} do
-      script.initData = payload(`{s}.initData`)
-      for k, record in (script.records :: { { [string]: unknown } }?) or {} do
-        record.data = payload(`{s}.records.{k}`)
+    for scriptIndex, script in (fields.scripts :: { { [string]: unknown } }?) or {} do
+      script.initData = payload(`{scriptIndex}.initData`)
+      for recordIndex, record in (script.records :: { { [string]: unknown } }?) or {} do
+        record.data = payload(`{scriptIndex}.records.{recordIndex}`)
       end
 
-      for k, instance in (script.instances :: { { [string]: unknown } }?) or {} do
-        instance.data = payload(`{s}.instances.{k}`)
+      for instanceIndex, instance in (script.instances :: { { [string]: unknown } }?) or {} do
+        instance.data = payload(`{scriptIndex}.instances.{instanceIndex}`)
       end
     end
   end
@@ -434,9 +434,9 @@ local function display(
         local group = groups and groups.references[ref + 1]
         if not group then continue end
 
-        for k = group[1] + 1, group[2] + 1 do
-          if subs[k].tag == 'FRMR' and subs[k].size == 4 then
-            local packed = buffer.readu32(source, subs[k].payload)
+        for ordinal = group[1] + 1, group[2] + 1 do
+          if subs[ordinal].tag == 'FRMR' and subs[ordinal].size == 4 then
+            local packed = buffer.readu32(source, subs[ordinal].payload)
             keep[packed] = true
             break
           end
