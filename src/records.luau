@@ -142,6 +142,28 @@ local function dialogueTopics(plugin: Plugin): { string }
   return topics
 end
 
+--- A record header's flags: the value as the file has it, and each bit the format names.
+export type HeaderFlags = {
+  value: number,
+  deleted: boolean,
+  persistent: boolean,
+  ignored: boolean,
+  blocked: boolean,
+}
+
+--- Record `index`'s header flags, read from its header: a decoded record's own `flags` field
+--- spells the same bits as names.
+local function headerFlags(plugin: Plugin, index: number): HeaderFlags
+  local value = plugin:flags(index)
+  return {
+    value = value,
+    deleted = bit32.btest(value, 0x20),
+    persistent = bit32.btest(value, 0x400),
+    ignored = bit32.btest(value, 0x1000),
+    blocked = bit32.btest(value, 0x2000),
+  }
+end
+
 --- Whether a CELL is an interior (its DATA flag bit 0); false for other records.
 local function cellIsInterior(plugin: Plugin, index: number): boolean
   if plugin:code(index) ~= CellTag then return false end
@@ -305,6 +327,7 @@ return table.freeze {
   fieldId = fieldId,
   fieldName = fieldName,
   find = find,
+  headerFlags = headerFlags,
   id = id,
   idSpan = idSpan,
   objectKeys = objectKeys,

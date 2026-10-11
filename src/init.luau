@@ -39,6 +39,7 @@ export type SaveProfile = Save.Profile
 export type Compatibility = Save.Compatibility
 export type StringField = Records.StringField
 export type Key = Records.Key
+export type HeaderFlags = Records.HeaderFlags
 export type LandPart = Land.Part
 export type LandTerrain = Land.Terrain
 export type LandParts = Land.Parts

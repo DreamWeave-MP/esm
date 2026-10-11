@@ -952,6 +952,104 @@ suite.describe('LAND terrain', function()
   end)
 end)
 
+-- jess's `jess.meta` contract (`contracts/meta`): what a record handle's metadata answered, from
+-- the plugin and the record's number.
+suite.describe('record metadata', function()
+  suite.it('gives each record\'s tag, type, id, size, and header flags', function()
+    local plugin = allTypes()
+    type Expected =
+      { index: number, tag: string, name: string, id: string?, size: number, flags: number }
+
+    local records: { Expected } = {
+      { index = 0, tag = 'TES3', name = 'Header', size = 421, flags = 0 },
+      { index = 11, tag = 'SKIL', name = 'Skill', size = 70, flags = 0 },
+      { index = 12, tag = 'MGEF', name = 'MagicEffect', size = 312, flags = 0 },
+      { index = 16, tag = 'SSCR', name = 'StartScript', id = 'test_script', size = 45, flags = 0 },
+      {
+        index = 17,
+        tag = 'LTEX',
+        name = 'LandscapeTexture',
+        id = 'Tx_BC_mainroad_01.tga',
+        size = 72,
+        flags = 0,
+      },
+      { index = 36, tag = 'LIGH', name = 'Light', id = 'test_light', size = 158, flags = 8192 },
+      { index = 37, tag = 'LIGH', name = 'Light', id = 'test_light_p', size = 160, flags = 9216 },
+      { index = 64, tag = 'CELL', name = 'Cell', id = 'test_exterior', size = 70, flags = 0 },
+      { index = 65, tag = 'LAND', name = 'Landscape', size = 30243, flags = 0 },
+      {
+        index = 66,
+        tag = 'CELL',
+        name = 'Cell',
+        id = 'Dagoth Ur, Facility Cavern',
+        size = 305,
+        flags = 0,
+      },
+      { index = 68, tag = 'PGRD', name = 'PathGrid', id = 'test_interior', size = 138, flags = 0 },
+      {
+        index = 71,
+        tag = 'INFO',
+        name = 'DialogueInfo',
+        id = '3159038603265019263',
+        size = 117,
+        flags = 0,
+      },
+    }
+
+    for _, expected in records do
+      local index = expected.index
+      expect(plugin:tag(index)).toBe(expected.tag)
+      expect(tes3.typeName(plugin:tag(index))).toBe(expected.name)
+      expect(tes3.records.fieldId(plugin, index) or tes3.records.id(plugin, index)).toBe(expected.id)
+      expect(plugin:size(index)).toBe(expected.size)
+      expect(tes3.records.headerFlags(plugin, index).value).toBe(expected.flags)
+    end
+
+    expect(tes3.records.headerFlags(plugin, 36)).toEqual {
+      value = 8192,
+      deleted = false,
+      persistent = false,
+      ignored = false,
+      blocked = true,
+    }
+
+    expect(tes3.records.headerFlags(plugin, 37)).toEqual {
+      value = 9216,
+      deleted = false,
+      persistent = true,
+      ignored = false,
+      blocked = true,
+    }
+  end)
+
+  suite.it('names every bit the format does, and follows an edit', function()
+    local plugin = open(
+      record('STAT', subrecord('NAME', 'gone\0'), 0x20)
+        .. record('STAT', subrecord('NAME', 'skipped\0'), 0x1000 + 0x40)
+    )
+    expect(tes3.records.headerFlags(plugin, 0)).toEqual {
+      value = 0x20,
+      deleted = true,
+      persistent = false,
+      ignored = false,
+      blocked = false,
+    }
+
+    expect(tes3.records.headerFlags(plugin, 1)).toEqual {
+      value = 0x1040,
+      deleted = false,
+      persistent = false,
+      ignored = true,
+      blocked = false,
+    }
+
+    local value = plugin:decode(0) :: tes3.Value
+    value.flags = 'PERSISTENT | BLOCKED'
+    plugin:set(0, value)
+    expect(tes3.records.headerFlags(plugin, 0).value).toBe(0x2400)
+  end)
+end)
+
 suite.describe('round trips', function()
   suite.it('checks a round trip, with types left out and cruft skipped', function()
     local bytes = record('TES3', '') .. record('GMST', subrecord('NAME', 'a\0'))
