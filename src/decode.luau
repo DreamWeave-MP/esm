@@ -23,7 +23,13 @@ local base64 = Schema.base64
 
 export type Value = { [string]: unknown }
 
-type Handler = (b: buffer, p: number, e: number, r: Value, enc: string) -> number
+type Handler = (
+  source: buffer,
+  position: number,
+  finish: number,
+  record: Value,
+  encoding: string
+) -> number
 
 export type Spec = {
   tag: string,
@@ -31,94 +37,116 @@ export type Spec = {
   init: () -> Value,
   handlers: { [number]: Handler },
   --- Turns what the handlers gathered into the value's final shape.
-  finish: ((r: Value, start: number) -> ())?,
+  finish: ((record: Value, start: number) -> ())?,
   --- Decodes the whole record instead of the handler loop.
-  custom: ((b: buffer, s: number, e: number, enc: string) -> Value)?,
+  custom: ((source: buffer, start: number, finish: number, encoding: string) -> Value)?,
 }
 
 local function fail(message: string): never error(message, 0) end
 
 local function eof(): never error('failed to fill whole buffer', 0) end
 
-local function need(p: number, n: number, e: number)
-  if p + n > e then eof() end
+local function need(position: number, length: number, finish: number)
+  if position + length > finish then eof() end
 end
 
-local function u32(b: buffer, p: number, e: number): number
-  need(p, 4, e)
-  return buffer.readu32(b, p)
+local function u32(source: buffer, position: number, finish: number): number
+  need(position, 4, finish)
+  return buffer.readu32(source, position)
 end
 
 --- `stream.expect(value)` for a u32: an error unless the next four bytes are `value`.
-local function expect(b: buffer, p: number, e: number, value: number): number
-  if u32(b, p, e) ~= value then fail 'Unexpected Value' end
+local function expect(source: buffer, position: number, finish: number, value: number): number
+  if u32(source, position, finish) ~= value then fail 'Unexpected Value' end
 
-  return p + 4
+  return position + 4
 end
 
 --- A length-prefixed string, cut at its first NUL (`String::load`).
-local function str(b: buffer, p: number, e: number, enc: string): (string, number)
-  local length = u32(b, p, e)
-  p += 4
-  if length == 0 then return '', p end
+local function text(
+  source: buffer,
+  position: number,
+  finish: number,
+  encoding: string
+): (string, number)
+  local length = u32(source, position, finish)
+  position += 4
+  if length == 0 then return '', position end
 
-  if p + length > e then fail(`length {length} exceeds the {e - p} bytes remaining`) end
+  if position + length > finish then
+    fail(`length {length} exceeds the {finish - position} bytes remaining`)
+  end
 
-  return Text.decode(b, p, length, enc), p + length
+  return Text.decode(source, position, length, encoding), position + length
 end
 
 --- A length-prefixed string keeping every byte (`load_exact_string`).
-local function exact(b: buffer, p: number, e: number, enc: string): (string, number)
-  local length = u32(b, p, e)
-  p += 4
-  if p + length > e then fail(`length {length} exceeds the {e - p} bytes remaining`) end
+local function exact(
+  source: buffer,
+  position: number,
+  finish: number,
+  encoding: string
+): (string, number)
+  local length = u32(source, position, finish)
+  position += 4
+  if position + length > finish then
+    fail(`length {length} exceeds the {finish - position} bytes remaining`)
+  end
 
-  return Text.decodeExact(b, p, length, enc), p + length
+  return Text.decodeExact(source, position, length, encoding), position + length
 end
 
---- `n` bytes of text cut at the first NUL (`FixedString<N>`, `load_string(n)`).
-local function fixed(b: buffer, p: number, e: number, n: number, enc: string): string
-  if n == 0 then return '' end
+--- `length` bytes of text cut at the first NUL (`FixedString<N>`, `load_string(n)`).
+local function fixed(
+  source: buffer,
+  position: number,
+  finish: number,
+  length: number,
+  encoding: string
+): string
+  if length == 0 then return '' end
 
-  if p + n > e then fail(`length {n} exceeds the {e - p} bytes remaining`) end
+  if position + length > finish then
+    fail(`length {length} exceeds the {finish - position} bytes remaining`)
+  end
 
-  return Text.decode(b, p, n, enc)
+  return Text.decode(source, position, length, encoding)
 end
 
-local function skip(p: number, n: number, e: number): number
-  if p + n > e then fail 'Skip out of bounds' end
+local function skip(position: number, length: number, finish: number): number
+  if position + length > finish then fail 'Skip out of bounds' end
 
-  return p + n
+  return position + length
 end
 
-local function enum32(e: Schema.Enum, b: buffer, p: number): string
-  return nameOf(e, buffer.readi32(b, p))
+local function enum32(enumeration: Schema.Enum, source: buffer, position: number): string
+  return nameOf(enumeration, buffer.readi32(source, position))
 end
 
 local function list(...: unknown): { unknown } return { ... } end
 
-local function f32List(b: buffer, p: number, n: number): { number }
-  local out = table.create(n, 0)
-  for i = 1, n do
-    out[i] = buffer.readf32(b, p + (i - 1) * 4)
+local function f32List(source: buffer, position: number, count: number): { number }
+  local out = table.create(count, 0)
+  for index = 1, count do
+    out[index] = buffer.readf32(source, position + (index - 1) * 4)
   end
 
   return out
 end
 
-local function u8List(b: buffer, p: number, n: number): { number }
-  local out = table.create(n, 0)
-  for i = 1, n do
-    out[i] = buffer.readu8(b, p + i - 1)
+local function u8List(source: buffer, position: number, count: number): { number }
+  local out = table.create(count, 0)
+  for index = 1, count do
+    out[index] = buffer.readu8(source, position + index - 1)
   end
 
   return out
 end
 
-local function i32List(b: buffer, p: number, n: number): { number }
-  local out = table.create(n, 0)
-  for i = 1, n do
-    out[i] = buffer.readi32(b, p + (i - 1) * 4)
+local function i32List(source: buffer, position: number, count: number): { number }
+  local out = table.create(count, 0)
+  for index = 1, count do
+    out[index] = buffer.readi32(source, position + (index - 1) * 4)
   end
 
   return out
@@ -127,134 +155,155 @@ end
 --[[ Handlers ]]
 
 --- A string subrecord into `field`.
-local function S(field: string): Handler
-  return function(b, p, e, r, enc)
-    local value, next = str(b, p, e, enc)
-    r[field] = value
+local function stringField(field: string): Handler
+  return function(source, position, finish, record, encoding)
+    local value, next = text(source, position, finish, encoding)
+    record[field] = value
     return next
   end
 end
 
 --- An exact string subrecord into `field`.
-local function X(field: string): Handler
-  return function(b, p, e, r, enc)
-    local value, next = exact(b, p, e, enc)
-    r[field] = value
+local function exactField(field: string): Handler
+  return function(source, position, finish, record, encoding)
+    local value, next = exact(source, position, finish, encoding)
+    record[field] = value
     return next
   end
 end
 
 --- A string subrecord appended to the list in `field`.
-local function SP(field: string): Handler
-  return function(b, p, e, r, enc)
-    local value, next = str(b, p, e, enc)
-    table.insert(r[field] :: { unknown }, value)
+local function stringItem(field: string): Handler
+  return function(source, position, finish, record, encoding)
+    local value, next = text(source, position, finish, encoding)
+    table.insert(record[field] :: { unknown }, value)
     return next
   end
 end
 
 --- A fixed-size subrecord of `size` bytes, read by `read`, into `field`.
-local function T(size: number, field: string, read: (b: buffer, p: number) -> unknown): Handler
-  return function(b, p, e, r)
-    p = expect(b, p, e, size)
-    need(p, size, e)
-    r[field] = read(b, p)
-    return p + size
-  end
-end
-
---- Like `T`, appending to the list in `field`.
-local function TP(size: number, field: string, read: (b: buffer, p: number) -> unknown): Handler
-  return function(b, p, e, r)
-    p = expect(b, p, e, size)
-    need(p, size, e)
-    table.insert(r[field] :: { unknown }, read(b, p))
-    return p + size
-  end
-end
-
---- Like `TP`, for a struct with text in it.
-local function TPS(
+local function structField(
   size: number,
   field: string,
-  read: (b: buffer, p: number, enc: string) -> unknown
+  read: (source: buffer, position: number) -> unknown
 ): Handler
-  return function(b, p, e, r, enc)
-    p = expect(b, p, e, size)
-    need(p, size, e)
-    table.insert(r[field] :: { unknown }, read(b, p, enc))
-    return p + size
+  return function(source, position, finish, record)
+    position = expect(source, position, finish, size)
+    need(position, size, finish)
+    record[field] = read(source, position)
+    return position + size
+  end
+end
+
+--- Like `structField`, appending to the list in `field`.
+local function structItem(
+  size: number,
+  field: string,
+  read: (source: buffer, position: number) -> unknown
+): Handler
+  return function(source, position, finish, record)
+    position = expect(source, position, finish, size)
+    need(position, size, finish)
+    table.insert(record[field] :: { unknown }, read(source, position))
+    return position + size
+  end
+end
+
+--- Like `structItem`, for a struct with text in it.
+local function textStructItem(
+  size: number,
+  field: string,
+  read: (source: buffer, position: number, encoding: string) -> unknown
+): Handler
+  return function(source, position, finish, record, encoding)
+    position = expect(source, position, finish, size)
+    need(position, size, finish)
+    table.insert(record[field] :: { unknown }, read(source, position, encoding))
+    return position + size
   end
 end
 
 --- DELE: skips its payload and sets the DELETED flag.
-local function DELE(b: buffer, p: number, e: number, r: Value, _enc: string): number
-  local size = u32(b, p, e)
-  r.flags = bit32.bor(r.flags :: number, 0x20)
-  return skip(p + 4, size, e)
+local function deleted(
+  source: buffer,
+  position: number,
+  finish: number,
+  record: Value,
+  _encoding: string
+): number
+  local size = u32(source, position, finish)
+  record.flags = bit32.bor(record.flags :: number, 0x20)
+  return skip(position + 4, size, finish)
 end
 
-local function readU32(b: buffer, p: number): number return buffer.readu32(b, p) end
+local function readU32(source: buffer, position: number): number
+  return buffer.readu32(source, position)
+end
 
-local function readF32(b: buffer, p: number): number return buffer.readf32(b, p) end
+local function readF32(source: buffer, position: number): number
+  return buffer.readf32(source, position)
+end
 
 --[[ Structs ]]
 
-local function classData(b: buffer, p: number): Value
-  local Skill = Enums.SkillId
+local function classData(source: buffer, position: number): Value
+  local skillId = Enums.SkillId
   return {
-    attribute1 = enum32(Enums.AttributeId, b, p),
-    attribute2 = enum32(Enums.AttributeId, b, p + 4),
-    specialization = enum32(Enums.Specialization, b, p + 8),
-    minor1 = enum32(Skill, b, p + 12),
-    major1 = enum32(Skill, b, p + 16),
-    minor2 = enum32(Skill, b, p + 20),
-    major2 = enum32(Skill, b, p + 24),
-    minor3 = enum32(Skill, b, p + 28),
-    major3 = enum32(Skill, b, p + 32),
-    minor4 = enum32(Skill, b, p + 36),
-    major4 = enum32(Skill, b, p + 40),
-    minor5 = enum32(Skill, b, p + 44),
-    major5 = enum32(Skill, b, p + 48),
-    flags = flagText(Flags.ClassFlags, buffer.readu32(b, p + 52)),
-    services = flagText(Flags.ServiceFlags, buffer.readu32(b, p + 56)),
+    attribute1 = enum32(Enums.AttributeId, source, position),
+    attribute2 = enum32(Enums.AttributeId, source, position + 4),
+    specialization = enum32(Enums.Specialization, source, position + 8),
+    minor1 = enum32(skillId, source, position + 12),
+    major1 = enum32(skillId, source, position + 16),
+    minor2 = enum32(skillId, source, position + 20),
+    major2 = enum32(skillId, source, position + 24),
+    minor3 = enum32(skillId, source, position + 28),
+    major3 = enum32(skillId, source, position + 32),
+    minor4 = enum32(skillId, source, position + 36),
+    major4 = enum32(skillId, source, position + 40),
+    minor5 = enum32(skillId, source, position + 44),
+    major5 = enum32(skillId, source, position + 48),
+    flags = flagText(Flags.ClassFlags, buffer.readu32(source, position + 52)),
+    services = flagText(Flags.ServiceFlags, buffer.readu32(source, position + 56)),
   }
 end
 
-local function factionData(b: buffer, p: number): Value
+local function factionData(source: buffer, position: number): Value
   local requirements = table.create(10)
-  for i = 0, 9 do
-    local q = p + 8 + i * 20
-    requirements[i + 1] = {
-      attributes = list(buffer.readi32(b, q), buffer.readi32(b, q + 4)),
-      primarySkill = buffer.readi32(b, q + 8),
-      favoredSkill = buffer.readi32(b, q + 12),
-      reputation = buffer.readi32(b, q + 16),
+  for index = 0, 9 do
+    local at = position + 8 + index * 20
+    requirements[index + 1] = {
+      attributes = list(buffer.readi32(source, at), buffer.readi32(source, at + 4)),
+      primarySkill = buffer.readi32(source, at + 8),
+      favoredSkill = buffer.readi32(source, at + 12),
+      reputation = buffer.readi32(source, at + 16),
     }
   end
 
   local skills = table.create(7)
-  for i = 0, 6 do
-    skills[i + 1] = enum32(Enums.SkillId, b, p + 208 + i * 4)
+  for index = 0, 6 do
+    skills[index + 1] = enum32(Enums.SkillId, source, position + 208 + index * 4)
   end
 
   return {
-    favoredAttributes = list(enum32(Enums.AttributeId, b, p), enum32(Enums.AttributeId, b, p + 4)),
+    favoredAttributes = list(
+      enum32(Enums.AttributeId, source, position),
+      enum32(Enums.AttributeId, source, position + 4)
+    ),
     requirements = requirements,
     favoredSkills = skills,
-    flags = flagText(Flags.FactionFlags, buffer.readu32(b, p + 236)),
+    flags = flagText(Flags.FactionFlags, buffer.readu32(source, position + 236)),
   }
 end
 
-local function raceData(b: buffer, p: number): Value
+local function raceData(source: buffer, position: number): Value
   local bonuses: Value = {}
-  for i = 0, 6 do
-    bonuses[`skill_{i}`] = enum32(Enums.SkillId, b, p + i * 8)
-    bonuses[`bonus_{i}`] = buffer.readi32(b, p + i * 8 + 4)
+  for index = 0, 6 do
+    bonuses[`skill_{index}`] = enum32(Enums.SkillId, source, position + index * 8)
+    bonuses[`bonus_{index}`] = buffer.readi32(source, position + index * 8 + 4)
   end
 
   local function pair(at: number): { number }
-    return { buffer.readi32(b, p + at), buffer.readi32(b, p + at + 4) }
+    return { buffer.readi32(source, position + at), buffer.readi32(source, position + at + 4) }
   end
 
   return {
@@ -267,36 +316,39 @@ local function raceData(b: buffer, p: number): Value
     endurance = pair(96),
     personality = pair(104),
     luck = pair(112),
-    height = f32List(b, p + 120, 2),
-    weight = f32List(b, p + 128, 2),
-    flags = flagText(Flags.RaceFlags, buffer.readu32(b, p + 136)),
+    height = f32List(source, position + 120, 2),
+    weight = f32List(source, position + 128, 2),
+    flags = flagText(Flags.RaceFlags, buffer.readu32(source, position + 136)),
   }
 end
 
-local function effect(b: buffer, p: number): Value
+local function effect(source: buffer, position: number): Value
   return {
-    magicEffect = nameOf(Enums.EffectId, buffer.readi16(b, p)),
-    skill = nameOf(Enums.SkillId, buffer.readi8(b, p + 2)),
-    attribute = nameOf(Enums.AttributeId, buffer.readi8(b, p + 3)),
-    range = nameOf(Enums.EffectRange, buffer.readu32(b, p + 4)),
-    area = buffer.readu32(b, p + 8),
-    duration = buffer.readu32(b, p + 12),
-    minMagnitude = buffer.readu32(b, p + 16),
-    maxMagnitude = buffer.readu32(b, p + 20),
+    magicEffect = nameOf(Enums.EffectId, buffer.readi16(source, position)),
+    skill = nameOf(Enums.SkillId, buffer.readi8(source, position + 2)),
+    attribute = nameOf(Enums.AttributeId, buffer.readi8(source, position + 3)),
+    range = nameOf(Enums.EffectRange, buffer.readu32(source, position + 4)),
+    area = buffer.readu32(source, position + 8),
+    duration = buffer.readu32(source, position + 12),
+    minMagnitude = buffer.readu32(source, position + 16),
+    maxMagnitude = buffer.readu32(source, position + 20),
   }
 end
 
-local function inventoryItem(b: buffer, p: number, enc: string): { unknown }
-  return { buffer.readi32(b, p), fixed(b, p + 4, p + 36, 32, enc) }
+local function inventoryItem(source: buffer, position: number, encoding: string): { unknown }
+  return {
+    buffer.readi32(source, position),
+    fixed(source, position + 4, position + 36, 32, encoding),
+  }
 end
 
-local function aiData(b: buffer, p: number): Value
+local function aiData(source: buffer, position: number): Value
   return {
-    hello = buffer.readi16(b, p),
-    fight = buffer.readi8(b, p + 2),
-    flee = buffer.readi8(b, p + 3),
-    alarm = buffer.readi8(b, p + 4),
-    services = flagText(Flags.ServiceFlags, buffer.readu32(b, p + 8)),
+    hello = buffer.readi16(source, position),
+    fight = buffer.readi8(source, position + 2),
+    flee = buffer.readi8(source, position + 3),
+    alarm = buffer.readi8(source, position + 4),
+    services = flagText(Flags.ServiceFlags, buffer.readu32(source, position + 8)),
   }
 end
 
@@ -304,46 +356,62 @@ end
 --- with its error swallowed: the string, and where the stream is afterwards. A failed read still
 --- moves the stream where the Rust cursor would be left.
 local function trailingString(
-  b: buffer,
-  p: number,
-  e: number,
+  source: buffer,
+  position: number,
+  finish: number,
   tag: number,
-  enc: string
+  encoding: string
 ): (string, number)
-  if e - p < 4 then return '', e end
+  if finish - position < 4 then return '', finish end
 
-  if buffer.readu32(b, p) ~= tag then return '', p end
+  if buffer.readu32(source, position) ~= tag then return '', position end
 
-  p += 4
-  if e - p < 4 then return '', e end
+  position += 4
+  if finish - position < 4 then return '', finish end
 
-  local length = buffer.readu32(b, p)
-  p += 4
-  if length == 0 then return '', p end
+  local length = buffer.readu32(source, position)
+  position += 4
+  if length == 0 then return '', position end
 
-  if p + length > e then return '', p end
+  if position + length > finish then return '', position end
 
-  return Text.decode(b, p, length, enc), p + length
+  return Text.decode(source, position, length, encoding), position + length
 end
 
-local CNDT = Tags.code 'CNDT'
-local DNAM = Tags.code 'DNAM'
+local CndtTag = Tags.code 'CNDT'
+local DnamTag = Tags.code 'DNAM'
 
 --- A travel destination: DODT's 24 bytes, then an optional DNAM.
-local function destination(b: buffer, p: number, e: number, enc: string): (Value, number)
-  local cell, next = trailingString(b, p + 24, e, DNAM, enc)
-  return { translation = f32List(b, p, 3), rotation = f32List(b, p + 12, 3), cell = cell }, next
+local function destination(
+  source: buffer,
+  position: number,
+  finish: number,
+  encoding: string
+): (Value, number)
+  local cell, next = trailingString(source, position + 24, finish, DnamTag, encoding)
+  return {
+    translation = f32List(source, position, 3),
+    rotation = f32List(source, position + 12, 3),
+    cell = cell,
+  },
+    next
 end
 
 --- AI_E and AI_F: 48 bytes, then an optional CNDT.
-local function escort(kind: string, b: buffer, p: number, e: number, enc: string): (Value, number)
-  local cell, next = trailingString(b, p + 48, e, CNDT, enc)
+local function escort(
+  kind: string,
+  source: buffer,
+  position: number,
+  finish: number,
+  encoding: string
+): (Value, number)
+  local cell, next = trailingString(source, position + 48, finish, CndtTag, encoding)
   return {
     type = kind,
-    location = f32List(b, p, 3),
-    duration = buffer.readu16(b, p + 12),
-    target = fixed(b, p + 14, e, 32, enc),
-    reset = buffer.readu8(b, p + 46),
+    location = f32List(source, position, 3),
+    duration = buffer.readu16(source, position + 12),
+    target = fixed(source, position + 14, finish, 32, encoding),
+    reset = buffer.readu8(source, position + 46),
     cell = cell,
   },
     next
@@ -351,63 +419,67 @@ end
 
 --- The handlers NPC_ and CREA share: inventory, spells, AI, travel.
 local function actorHandlers(handlers: { [string]: Handler }): { [string]: Handler }
-  handlers.NPCO = TPS(36, 'inventory', inventoryItem)
-  handlers.NPCS = SP 'spells'
-  handlers.AIDT = T(12, 'aiData', aiData)
-  handlers.DODT = function(b, p, e, r, enc)
-    p = expect(b, p, e, 24)
-    need(p, 24, e)
-    local value, next = destination(b, p, e, enc)
-    table.insert(r.travelDestinations :: { unknown }, value)
+  handlers.NPCO = textStructItem(36, 'inventory', inventoryItem)
+  handlers.NPCS = stringItem 'spells'
+  handlers.AIDT = structField(12, 'aiData', aiData)
+  handlers.DODT = function(source, position, finish, record, encoding)
+    position = expect(source, position, finish, 24)
+    need(position, 24, finish)
+    local value, next = destination(source, position, finish, encoding)
+    table.insert(record.travelDestinations :: { unknown }, value)
     return next
   end
-  handlers.AI_T = TP(
+  handlers.AI_T = structItem(
     16,
     'aiPackages',
-    function(b, p)
-      return { type = 'Travel', location = f32List(b, p, 3), reset = buffer.readu8(b, p + 12) }
+    function(source, position)
+      return {
+        type = 'Travel',
+        location = f32List(source, position, 3),
+        reset = buffer.readu8(source, position + 12),
+      }
     end
   )
-  handlers.AI_W = TP(
+  handlers.AI_W = structItem(
     14,
     'aiPackages',
-    function(b, p)
+    function(source, position)
       return {
         type = 'Wander',
-        distance = buffer.readu16(b, p),
-        duration = buffer.readu16(b, p + 2),
-        gameHour = buffer.readu8(b, p + 4),
-        idle2 = buffer.readu8(b, p + 5),
-        idle3 = buffer.readu8(b, p + 6),
-        idle4 = buffer.readu8(b, p + 7),
-        idle5 = buffer.readu8(b, p + 8),
-        idle6 = buffer.readu8(b, p + 9),
-        idle7 = buffer.readu8(b, p + 10),
-        idle8 = buffer.readu8(b, p + 11),
-        idle9 = buffer.readu8(b, p + 12),
-        reset = buffer.readi8(b, p + 13),
+        distance = buffer.readu16(source, position),
+        duration = buffer.readu16(source, position + 2),
+        gameHour = buffer.readu8(source, position + 4),
+        idle2 = buffer.readu8(source, position + 5),
+        idle3 = buffer.readu8(source, position + 6),
+        idle4 = buffer.readu8(source, position + 7),
+        idle5 = buffer.readu8(source, position + 8),
+        idle6 = buffer.readu8(source, position + 9),
+        idle7 = buffer.readu8(source, position + 10),
+        idle8 = buffer.readu8(source, position + 11),
+        idle9 = buffer.readu8(source, position + 12),
+        reset = buffer.readi8(source, position + 13),
       }
     end
   )
   for _, pair in { { 'AI_E', 'Escort' }, { 'AI_F', 'Follow' } } do
     local kind = pair[2]
-    handlers[pair[1]] = function(b, p, e, r, enc)
-      p = expect(b, p, e, 48)
-      need(p, 48, e)
-      local value, next = escort(kind, b, p, e, enc)
-      table.insert(r.aiPackages :: { unknown }, value)
+    handlers[pair[1]] = function(source, position, finish, record, encoding)
+      position = expect(source, position, finish, 48)
+      need(position, 48, finish)
+      local value, next = escort(kind, source, position, finish, encoding)
+      table.insert(record.aiPackages :: { unknown }, value)
       return next
     end
   end
 
-  handlers.AI_A = TPS(
+  handlers.AI_A = textStructItem(
     33,
     'aiPackages',
-    function(b, p, enc)
+    function(source, position, encoding)
       return {
         type = 'Activate',
-        target = fixed(b, p, p + 32, 32, enc),
-        reset = buffer.readu8(b, p + 32),
+        target = fixed(source, position, position + 32, 32, encoding),
+        reset = buffer.readu8(source, position + 32),
       }
     end
   )
@@ -416,13 +488,13 @@ end
 
 --- The flags an NPC_ or CREA FLAG holds, without the blood type in bits 10 to 12.
 local function actorFlags(field: string): Handler
-  return function(b, p, e, value)
-    p = expect(b, p, e, 4)
-    need(p, 4, e)
-    local bits = buffer.readu32(b, p)
-    value[field] = bit32.band(bits, bit32.bnot(0x1c00))
-    value.bloodType = bit32.extract(bits, 10, 3)
-    return p + 4
+  return function(source, position, finish, record)
+    position = expect(source, position, finish, 4)
+    need(position, 4, finish)
+    local bits = buffer.readu32(source, position)
+    record[field] = bit32.band(bits, bit32.bnot(0x1c00))
+    record.bloodType = bit32.extract(bits, 10, 3)
+    return position + 4
   end
 end
 
@@ -463,7 +535,7 @@ local function spec(
   name: string,
   init: () -> Value,
   handlers: { [string]: Handler },
-  finish: ((r: Value, start: number) -> ())?
+  finish: ((record: Value, start: number) -> ())?
 )
   local byCode: { [number]: Handler } = {}
   for sub, handler in handlers do
@@ -490,15 +562,17 @@ local function base(extra: Value?): () -> Value
 
   return function()
     local value = table.clone(template)
-    for i, key in keys do
-      value[key] = factories[i]()
+    for index, key in keys do
+      value[key] = factories[index]()
     end
 
     return value
   end
 end
 
-local function finishFlags(r: Value) r.flags = flagText(Flags.ObjectFlags, r.flags :: number) end
+local function finishFlags(record: Value)
+  record.flags = flagText(Flags.ObjectFlags, record.flags :: number)
+end
 
 spec(
   'TES3',
@@ -516,26 +590,27 @@ spec(
   end,
 
   {
-    HEDR = function(b, p, e, r, enc)
-      p = expect(b, p, e, 300)
-      need(p, 300, e)
-      r.version = buffer.readf32(b, p)
-      r.fileType = nameOf(Enums.FileType, buffer.readu32(b, p + 4))
-      r.author = fixed(b, p + 8, e, 32, enc)
-      r.description = fixed(b, p + 40, e, 256, enc)
-      r.numObjects = buffer.readu32(b, p + 296)
-      return p + 300
+    HEDR = function(source, position, finish, record, encoding)
+      position = expect(source, position, finish, 300)
+      need(position, 300, finish)
+      record.version = buffer.readf32(source, position)
+      record.fileType = nameOf(Enums.FileType, buffer.readu32(source, position + 4))
+      record.author = fixed(source, position + 8, finish, 32, encoding)
+      record.description = fixed(source, position + 40, finish, 256, encoding)
+      record.numObjects = buffer.readu32(source, position + 296)
+      return position + 300
     end,
 
-    MAST = function(b, p, e, r, enc)
+    MAST = function(source, position, finish, record, encoding)
       local name
-      name, p = str(b, p, e, enc)
-      p = expect(b, p, e, Tags.code 'DATA')
-      p = expect(b, p, e, 8)
-      need(p, 8, e)
-      local size = buffer.readu32(b, p) + buffer.readu32(b, p + 4) * 4294967296
-      table.insert(r.masters :: { unknown }, { name, size })
-      return p + 8
+      name, position = text(source, position, finish, encoding)
+      position = expect(source, position, finish, Tags.code 'DATA')
+      position = expect(source, position, finish, 8)
+      need(position, 8, finish)
+      local size = buffer.readu32(source, position)
+        + buffer.readu32(source, position + 4) * 4294967296
+      table.insert(record.masters :: { unknown }, { name, size })
+      return position + 8
     end,
   },
   finishFlags
@@ -549,35 +624,35 @@ spec(
   },
 
   {
-    NAME = S 'id',
-    STRV = function(b, p, e, r, enc)
-      local value, next = exact(b, p, e, enc)
-      r.value = { type = 'String', data = value }
+    NAME = stringField 'id',
+    STRV = function(source, position, finish, record, encoding)
+      local value, next = exact(source, position, finish, encoding)
+      record.value = { type = 'String', data = value }
       return next
     end,
 
-    FLTV = function(b, p, e, r)
-      p = expect(b, p, e, 4)
-      need(p, 4, e)
-      r.value = { type = 'Float', data = buffer.readf32(b, p) }
-      return p + 4
+    FLTV = function(source, position, finish, record)
+      position = expect(source, position, finish, 4)
+      need(position, 4, finish)
+      record.value = { type = 'Float', data = buffer.readf32(source, position) }
+      return position + 4
     end,
 
-    INTV = function(b, p, e, r)
-      p = expect(b, p, e, 4)
-      need(p, 4, e)
-      r.value = { type = 'Integer', data = buffer.readi32(b, p) }
-      return p + 4
+    INTV = function(source, position, finish, record)
+      position = expect(source, position, finish, 4)
+      need(position, 4, finish)
+      record.value = { type = 'Integer', data = buffer.readi32(source, position) }
+      return position + 4
     end,
   },
   finishFlags
 )
 
 --- `v as i32` and `v as i16` in Rust: toward zero, saturating, NaN as 0.
-local function saturate(v: number, low: number, high: number): number
-  if v ~= v then return 0 end
+local function saturate(value: number, low: number, high: number): number
+  if value ~= value then return 0 end
 
-  local truncated = if v >= 0 then math.floor(v) else math.ceil(v)
+  local truncated = if value >= 0 then math.floor(value) else math.ceil(value)
   return math.clamp(truncated, low, high)
 end
 
@@ -589,29 +664,29 @@ spec(
   },
 
   {
-    NAME = S 'id',
-    FNAM = function(b, p, e, r)
-      p = expect(b, p, e, 1)
-      need(p, 1, e)
-      local kind = nameOf(Enums.GlobalType, buffer.readu8(b, p))
-      p = expect(b, p + 1, e, Tags.code 'FLTV')
-      p = expect(b, p, e, 4)
-      need(p, 4, e)
-      local value = buffer.readf32(b, p)
+    NAME = stringField 'id',
+    FNAM = function(source, position, finish, record)
+      position = expect(source, position, finish, 1)
+      need(position, 1, finish)
+      local kind = nameOf(Enums.GlobalType, buffer.readu8(source, position))
+      position = expect(source, position + 1, finish, Tags.code 'FLTV')
+      position = expect(source, position, finish, 4)
+      need(position, 4, finish)
+      local value = buffer.readf32(source, position)
       -- NaNs are converted to zero by the engine ("ratskilled" in Morrowind.esm).
       if value ~= value then value = 0 end
 
       if kind == 'Long' then
-        r.value = { type = 'Long', data = saturate(value, -2147483648, 2147483647) }
+        record.value = { type = 'Long', data = saturate(value, -2147483648, 2147483647) }
       elseif kind == 'Short' then
-        r.value = { type = 'Short', data = saturate(value, -32768, 32767) }
+        record.value = { type = 'Short', data = saturate(value, -32768, 32767) }
       else
-        r.value = { type = 'Float', data = value }
+        record.value = { type = 'Float', data = value }
       end
 
-      return p + 4
+      return position + 4
     end,
-    DELE = DELE,
+    DELE = deleted,
   },
   finishFlags
 )
@@ -633,11 +708,11 @@ spec(
   },
 
   {
-    NAME = S 'id',
-    FNAM = S 'name',
-    CLDT = T(60, 'data', classData),
-    DESC = X 'description',
-    DELE = DELE,
+    NAME = stringField 'id',
+    FNAM = stringField 'name',
+    CLDT = structField(60, 'data', classData),
+    DESC = exactField 'description',
+    DELE = deleted,
   },
   finishFlags
 )
@@ -646,8 +721,9 @@ spec(
 -- attribute (Strength) and skill (Block); the Rust default is None for both, so build it by hand.
 local function emptyFactionData(): Value
   local requirements = table.create(10)
-  for i = 1, 10 do
-    requirements[i] = { attributes = { 0, 0 }, primarySkill = 0, favoredSkill = 0, reputation = 0 }
+  for index = 1, 10 do
+    requirements[index] =
+      { attributes = { 0, 0 }, primarySkill = 0, favoredSkill = 0, reputation = 0 }
   end
 
   return {
@@ -669,32 +745,32 @@ spec(
   },
 
   {
-    NAME = S 'id',
-    FNAM = S 'name',
-    RNAM = SP 'rankNames',
-    FADT = T(240, 'data', factionData),
-    ANAM = function(b, p, e, r, enc)
+    NAME = stringField 'id',
+    FNAM = stringField 'name',
+    RNAM = stringItem 'rankNames',
+    FADT = structField(240, 'data', factionData),
+    ANAM = function(source, position, finish, record, encoding)
       local faction
-      faction, p = str(b, p, e, enc)
-      p = expect(b, p, e, Tags.code 'INTV')
-      p = expect(b, p, e, 4)
-      need(p, 4, e)
+      faction, position = text(source, position, finish, encoding)
+      position = expect(source, position, finish, Tags.code 'INTV')
+      position = expect(source, position, finish, 4)
+      need(position, 4, finish)
       table.insert(
-        r.reactions :: { unknown },
-        { faction = faction, reaction = buffer.readi32(b, p) }
+        record.reactions :: { unknown },
+        { faction = faction, reaction = buffer.readi32(source, position) }
       )
-      return p + 4
+      return position + 4
     end,
-    DELE = DELE,
+    DELE = deleted,
   },
   finishFlags
 )
 
 local function emptyRaceData(): Value
   local bonuses: Value = {}
-  for i = 0, 6 do
-    bonuses[`skill_{i}`] = 'None'
-    bonuses[`bonus_{i}`] = 0
+  for index = 0, 6 do
+    bonuses[`skill_{index}`] = 'None'
+    bonuses[`bonus_{index}`] = 0
   end
 
   return {
@@ -724,12 +800,12 @@ spec(
   },
 
   {
-    NAME = S 'id',
-    FNAM = S 'name',
-    RADT = T(140, 'data', raceData),
-    NPCS = SP 'spells',
-    DESC = X 'description',
-    DELE = DELE,
+    NAME = stringField 'id',
+    FNAM = stringField 'name',
+    RADT = structField(140, 'data', raceData),
+    NPCS = stringItem 'spells',
+    DESC = exactField 'description',
+    DELE = deleted,
   },
   finishFlags
 )
@@ -743,33 +819,35 @@ spec(
   },
 
   {
-    NAME = S 'id',
-    FNAM = S 'soundPath',
-    DATA = T(
+    NAME = stringField 'id',
+    FNAM = stringField 'soundPath',
+    DATA = structField(
       3,
       'data',
-      function(b, p)
+      function(source, position)
         return {
-          volume = buffer.readu8(b, p),
-          range = { buffer.readu8(b, p + 1), buffer.readu8(b, p + 2) },
+          volume = buffer.readu8(source, position),
+          range = { buffer.readu8(source, position + 1), buffer.readu8(source, position + 2) },
         }
       end
     ),
-    DELE = DELE,
+    DELE = deleted,
   },
   finishFlags
 )
 
 spec('SNDG', 'SoundGen', base { soundGenType = 'LeftFoot', creature = '', sound = '' }, {
-  NAME = S 'id',
-  DATA = T(
+  NAME = stringField 'id',
+  DATA = structField(
     4,
     'soundGenType',
-    function(b, p) return nameOf(Enums.SoundGenType, buffer.readu32(b, p)) end
+    function(source, position)
+      return nameOf(Enums.SoundGenType, buffer.readu32(source, position))
+    end
   ),
-  CNAM = S 'creature',
-  SNAM = S 'sound',
-  DELE = DELE,
+  CNAM = stringField 'creature',
+  SNAM = stringField 'sound',
+  DELE = deleted,
 }, finishFlags)
 
 spec(
@@ -785,20 +863,24 @@ spec(
   end,
 
   {
-    INDX = T(4, 'skillId', function(b, p) return enum32(Enums.SkillId, b, p) end),
-    SKDT = T(
+    INDX = structField(
+      4,
+      'skillId',
+      function(source, position) return enum32(Enums.SkillId, source, position) end
+    ),
+    SKDT = structField(
       24,
       'data',
-      function(b, p)
+      function(source, position)
         return {
-          governingAttribute = buffer.readi32(b, p),
-          specialization = buffer.readi32(b, p + 4),
-          actions = f32List(b, p + 8, 4),
+          governingAttribute = buffer.readi32(source, position),
+          specialization = buffer.readi32(source, position + 4),
+          actions = f32List(source, position + 8, 4),
         }
       end
     ),
-    DESC = X 'description',
-    DELE = DELE,
+    DESC = exactField 'description',
+    DELE = deleted,
   },
   finishFlags
 )
@@ -818,24 +900,28 @@ local MagicEffectStrings: { [string]: string } = {
 
 do
   local handlers: { [string]: Handler } = {
-    INDX = T(4, 'effectId', function(b, p) return enum32(Enums.EffectId, b, p) end),
-    MEDT = T(
+    INDX = structField(
+      4,
+      'effectId',
+      function(source, position) return enum32(Enums.EffectId, source, position) end
+    ),
+    MEDT = structField(
       36,
       'data',
-      function(b, p)
+      function(source, position)
         return {
-          school = nameOf(Enums.EffectSchool, buffer.readu32(b, p)),
-          baseCost = buffer.readf32(b, p + 4),
-          flags = flagText(Flags.MagicEffectFlags, buffer.readu32(b, p + 8)),
-          color = i32List(b, p + 12, 3),
-          speed = buffer.readf32(b, p + 24),
-          size = buffer.readf32(b, p + 28),
-          sizeCap = buffer.readf32(b, p + 32),
+          school = nameOf(Enums.EffectSchool, buffer.readu32(source, position)),
+          baseCost = buffer.readf32(source, position + 4),
+          flags = flagText(Flags.MagicEffectFlags, buffer.readu32(source, position + 8)),
+          color = i32List(source, position + 12, 3),
+          speed = buffer.readf32(source, position + 24),
+          size = buffer.readf32(source, position + 28),
+          sizeCap = buffer.readf32(source, position + 32),
         }
       end
     ),
-    DESC = X 'description',
-    DELE = DELE,
+    DESC = exactField 'description',
+    DELE = deleted,
   }
 
   local defaults: Value = {
@@ -856,7 +942,7 @@ do
   }
 
   for sub, field in MagicEffectStrings do
-    handlers[sub] = S(field)
+    handlers[sub] = stringField(field)
     defaults[field] = ''
   end
 
@@ -891,35 +977,35 @@ spec(
   end,
 
   {
-    SCHD = function(b, p, e, r, enc)
-      p = expect(b, p, e, 52)
-      need(p, 52, e)
-      r.id = fixed(b, p, e, 32, enc)
-      r.header = {
-        numShorts = buffer.readu32(b, p + 32),
-        numLongs = buffer.readu32(b, p + 36),
-        numFloats = buffer.readu32(b, p + 40),
-        bytecodeLength = buffer.readu32(b, p + 44),
-        variablesLength = buffer.readu32(b, p + 48),
+    SCHD = function(source, position, finish, record, encoding)
+      position = expect(source, position, finish, 52)
+      need(position, 52, finish)
+      record.id = fixed(source, position, finish, 32, encoding)
+      record.header = {
+        numShorts = buffer.readu32(source, position + 32),
+        numLongs = buffer.readu32(source, position + 36),
+        numFloats = buffer.readu32(source, position + 40),
+        bytecodeLength = buffer.readu32(source, position + 44),
+        variablesLength = buffer.readu32(source, position + 48),
       }
-      return p + 52
+      return position + 52
     end,
 
-    SCVR = function(b, p, e, r)
-      local length = u32(b, p, e)
-      need(p + 4, length, e)
-      r.variables = base64(b, p, length + 4)
-      return p + 4 + length
+    SCVR = function(source, position, finish, record)
+      local length = u32(source, position, finish)
+      need(position + 4, length, finish)
+      record.variables = base64(source, position, length + 4)
+      return position + 4 + length
     end,
 
-    SCDT = function(b, p, e, r)
-      local length = u32(b, p, e)
-      need(p + 4, length, e)
-      r.bytecode = base64(b, p, length + 4)
-      return p + 4 + length
+    SCDT = function(source, position, finish, record)
+      local length = u32(source, position, finish)
+      need(position + 4, length, finish)
+      record.bytecode = base64(source, position, length + 4)
+      return position + 4 + length
     end,
-    SCTX = X 'text',
-    DELE = DELE,
+    SCTX = exactField 'text',
+    DELE = deleted,
   },
   finishFlags
 )
@@ -951,36 +1037,45 @@ spec(
   end,
 
   {
-    NAME = S 'id',
-    FNAM = S 'name',
-    WEAT = function(b, p, e, r)
-      local length = u32(b, p, e)
+    NAME = stringField 'id',
+    FNAM = stringField 'name',
+    WEAT = function(source, position, finish, record)
+      local length = u32(source, position, finish)
       if length ~= 8 and length ~= 10 then fail(`Unexpected size ({length}) for REGN::WEAT`) end
 
-      p += 4
-      need(p, length, e)
-      r.weatherChances = {
-        clear = buffer.readu8(b, p),
-        cloudy = buffer.readu8(b, p + 1),
-        foggy = buffer.readu8(b, p + 2),
-        overcast = buffer.readu8(b, p + 3),
-        rain = buffer.readu8(b, p + 4),
-        thunder = buffer.readu8(b, p + 5),
-        ash = buffer.readu8(b, p + 6),
-        blight = buffer.readu8(b, p + 7),
-        snow = if length == 10 then buffer.readu8(b, p + 8) else 0,
-        blizzard = if length == 10 then buffer.readu8(b, p + 9) else 0,
+      position += 4
+      need(position, length, finish)
+      record.weatherChances = {
+        clear = buffer.readu8(source, position),
+        cloudy = buffer.readu8(source, position + 1),
+        foggy = buffer.readu8(source, position + 2),
+        overcast = buffer.readu8(source, position + 3),
+        rain = buffer.readu8(source, position + 4),
+        thunder = buffer.readu8(source, position + 5),
+        ash = buffer.readu8(source, position + 6),
+        blight = buffer.readu8(source, position + 7),
+        snow = if length == 10 then buffer.readu8(source, position + 8) else 0,
+        blizzard = if length == 10 then buffer.readu8(source, position + 9) else 0,
       }
-      return p + length
+      return position + length
     end,
-    BNAM = S 'sleepCreature',
-    CNAM = T(4, 'mapColor', function(b, p) return u8List(b, p, 4) end),
-    SNAM = TPS(
+    BNAM = stringField 'sleepCreature',
+    CNAM = structField(
+      4,
+      'mapColor',
+      function(source, position) return u8List(source, position, 4) end
+    ),
+    SNAM = textStructItem(
       33,
       'sounds',
-      function(b, p, enc) return { fixed(b, p, p + 32, 32, enc), buffer.readu8(b, p + 32) } end
+      function(source, position, encoding)
+        return {
+          fixed(source, position, position + 32, 32, encoding),
+          buffer.readu8(source, position + 32),
+        }
+      end
     ),
-    DELE = DELE,
+    DELE = deleted,
   },
   finishFlags
 )
@@ -996,27 +1091,27 @@ spec(
   },
 
   {
-    NAME = S 'id',
-    FNAM = S 'name',
-    TNAM = S 'texture',
-    DESC = S 'description',
-    NPCS = SP 'spells',
-    DELE = DELE,
+    NAME = stringField 'id',
+    FNAM = stringField 'name',
+    TNAM = stringField 'texture',
+    DESC = stringField 'description',
+    NPCS = stringItem 'spells',
+    DELE = deleted,
   },
   finishFlags
 )
 
 spec('SSCR', 'StartScript', base { script = '' }, {
-  DATA = S 'id',
-  NAME = S 'script',
-  DELE = DELE,
+  DATA = stringField 'id',
+  NAME = stringField 'script',
+  DELE = deleted,
 }, finishFlags)
 
 spec('LTEX', 'LandscapeTexture', base { index = 0, fileName = '' }, {
-  NAME = S 'id',
-  INTV = T(4, 'index', readU32),
-  DATA = S 'fileName',
-  DELE = DELE,
+  NAME = stringField 'id',
+  INTV = structField(4, 'index', readU32),
+  DATA = stringField 'fileName',
+  DELE = deleted,
 }, finishFlags)
 
 spec(
@@ -1029,21 +1124,21 @@ spec(
   },
 
   {
-    NAME = S 'id',
-    FNAM = S 'name',
-    SPDT = T(
+    NAME = stringField 'id',
+    FNAM = stringField 'name',
+    SPDT = structField(
       12,
       'data',
-      function(b, p)
+      function(source, position)
         return {
-          spellType = nameOf(Enums.SpellType, buffer.readu32(b, p)),
-          cost = buffer.readu32(b, p + 4),
-          flags = flagText(Flags.SpellFlags, buffer.readu32(b, p + 8)),
+          spellType = nameOf(Enums.SpellType, buffer.readu32(source, position)),
+          cost = buffer.readu32(source, position + 4),
+          flags = flagText(Flags.SpellFlags, buffer.readu32(source, position + 8)),
         }
       end
     ),
-    ENAM = TP(24, 'effects', effect),
-    DELE = DELE,
+    ENAM = structItem(24, 'effects', effect),
+    DELE = deleted,
   },
   finishFlags
 )
@@ -1052,18 +1147,18 @@ spec(
   'STAT',
   'Static',
   base { mesh = '' },
-  { NAME = S 'id', MODL = S 'mesh', DELE = DELE },
+  { NAME = stringField 'id', MODL = stringField 'mesh', DELE = deleted },
   finishFlags
 )
 
 spec('DOOR', 'Door', base { name = '', script = '', mesh = '', openSound = '', closeSound = '' }, {
-  NAME = S 'id',
-  MODL = S 'mesh',
-  FNAM = S 'name',
-  SCRI = S 'script',
-  SNAM = S 'openSound',
-  ANAM = S 'closeSound',
-  DELE = DELE,
+  NAME = stringField 'id',
+  MODL = stringField 'mesh',
+  FNAM = stringField 'name',
+  SCRI = stringField 'script',
+  SNAM = stringField 'openSound',
+  ANAM = stringField 'closeSound',
+  DELE = deleted,
 }, finishFlags)
 
 --- An item with name, script, mesh, icon, and a data struct of `size` read by `read`.
@@ -1072,7 +1167,7 @@ local function item(
   name: string,
   dataTag: string,
   size: number,
-  read: (b: buffer, p: number) -> Value,
+  read: (source: buffer, position: number) -> Value,
   extra: { [string]: Handler }?,
   defaults: Value?
 )
@@ -1091,14 +1186,14 @@ local function item(
   end
 
   local handlers: { [string]: Handler } = {
-    NAME = S 'id',
-    MODL = S 'mesh',
-    FNAM = S 'name',
-    SCRI = S 'script',
-    ITEX = S 'icon',
-    DELE = DELE,
+    NAME = stringField 'id',
+    MODL = stringField 'mesh',
+    FNAM = stringField 'name',
+    SCRI = stringField 'script',
+    ITEX = stringField 'icon',
+    DELE = deleted,
   }
-  handlers[dataTag] = T(size, 'data', read)
+  handlers[dataTag] = structField(size, 'data', read)
   if extra then
     for sub, handler in extra do
       handlers[sub] = handler
@@ -1113,11 +1208,11 @@ item(
   'MiscItem',
   'MCDT',
   12,
-  function(b, p)
+  function(source, position)
     return {
-      weight = buffer.readf32(b, p),
-      value = buffer.readu32(b, p + 4),
-      flags = flagText(Flags.MiscItemFlags, buffer.readu32(b, p + 8)),
+      weight = buffer.readf32(source, position),
+      value = buffer.readu32(source, position + 4),
+      flags = flagText(Flags.MiscItemFlags, buffer.readu32(source, position + 8)),
     }
   end
 )
@@ -1127,53 +1222,59 @@ item(
   'Weapon',
   'WPDT',
   32,
-  function(b, p)
+  function(source, position)
     return {
-      weight = buffer.readf32(b, p),
-      value = buffer.readu32(b, p + 4),
-      weaponType = nameOf(Enums.WeaponType, buffer.readu16(b, p + 8)),
-      health = buffer.readu16(b, p + 10),
-      speed = buffer.readf32(b, p + 12),
-      reach = buffer.readf32(b, p + 16),
-      enchantment = buffer.readu16(b, p + 20),
-      chopMin = buffer.readu8(b, p + 22),
-      chopMax = buffer.readu8(b, p + 23),
-      slashMin = buffer.readu8(b, p + 24),
-      slashMax = buffer.readu8(b, p + 25),
-      thrustMin = buffer.readu8(b, p + 26),
-      thrustMax = buffer.readu8(b, p + 27),
-      flags = flagText(Flags.WeaponFlags, buffer.readu32(b, p + 28)),
+      weight = buffer.readf32(source, position),
+      value = buffer.readu32(source, position + 4),
+      weaponType = nameOf(Enums.WeaponType, buffer.readu16(source, position + 8)),
+      health = buffer.readu16(source, position + 10),
+      speed = buffer.readf32(source, position + 12),
+      reach = buffer.readf32(source, position + 16),
+      enchantment = buffer.readu16(source, position + 20),
+      chopMin = buffer.readu8(source, position + 22),
+      chopMax = buffer.readu8(source, position + 23),
+      slashMin = buffer.readu8(source, position + 24),
+      slashMax = buffer.readu8(source, position + 25),
+      thrustMin = buffer.readu8(source, position + 26),
+      thrustMax = buffer.readu8(source, position + 27),
+      flags = flagText(Flags.WeaponFlags, buffer.readu32(source, position + 28)),
     }
   end,
-  { ENAM = S 'enchanting' },
+  { ENAM = stringField 'enchanting' },
   { enchanting = '' }
 )
 
-local function bipedObject(b: buffer, p: number, e: number, r: Value, enc: string): number
-  p = expect(b, p, e, 1)
-  need(p, 1, e)
+local function bipedObject(
+  source: buffer,
+  position: number,
+  finish: number,
+  record: Value,
+  encoding: string
+): number
+  position = expect(source, position, finish, 1)
+  need(position, 1, finish)
   local object: Value = {
-    bipedObjectType = nameOf(Enums.BipedObjectType, buffer.readu8(b, p)),
+    bipedObjectType = nameOf(Enums.BipedObjectType, buffer.readu8(source, position)),
     maleBodypart = '',
     femaleBodypart = '',
   }
-  p += 1
+  position += 1
   for _ = 1, 2 do
-    if e - p < 4 then
-      p = e
+    if finish - position < 4 then
+      position = finish
       break
     end
 
-    local tag = buffer.readu32(b, p)
+    local tag = buffer.readu32(source, position)
     if tag == Tags.code 'BNAM' then
-      object.maleBodypart, p = str(b, p + 4, e, enc)
+      object.maleBodypart, position = text(source, position + 4, finish, encoding)
     elseif tag == Tags.code 'CNAM' then
-      object.femaleBodypart, p = str(b, p + 4, e, enc)
+      object.femaleBodypart, position = text(source, position + 4, finish, encoding)
     end
   end
 
-  table.insert(r.bipedObjects :: { unknown }, object)
-  return p
+  table.insert(record.bipedObjects :: { unknown }, object)
+  return position
 end
 
 item(
@@ -1181,17 +1282,17 @@ item(
   'Armor',
   'AODT',
   24,
-  function(b, p)
+  function(source, position)
     return {
-      armorType = nameOf(Enums.ArmorType, buffer.readu32(b, p)),
-      weight = buffer.readf32(b, p + 4),
-      value = buffer.readu32(b, p + 8),
-      health = buffer.readu32(b, p + 12),
-      enchantment = buffer.readu32(b, p + 16),
-      armorRating = buffer.readu32(b, p + 20),
+      armorType = nameOf(Enums.ArmorType, buffer.readu32(source, position)),
+      weight = buffer.readf32(source, position + 4),
+      value = buffer.readu32(source, position + 8),
+      health = buffer.readu32(source, position + 12),
+      enchantment = buffer.readu32(source, position + 16),
+      armorRating = buffer.readu32(source, position + 20),
     }
   end,
-  { ENAM = S 'enchanting', INDX = bipedObject },
+  { ENAM = stringField 'enchanting', INDX = bipedObject },
   {
     enchanting = '',
     bipedObjects = function() return {} end,
@@ -1203,15 +1304,15 @@ item(
   'Clothing',
   'CTDT',
   12,
-  function(b, p)
+  function(source, position)
     return {
-      clothingType = nameOf(Enums.ClothingType, buffer.readu32(b, p)),
-      weight = buffer.readf32(b, p + 4),
-      value = buffer.readu16(b, p + 8),
-      enchantment = buffer.readu16(b, p + 10),
+      clothingType = nameOf(Enums.ClothingType, buffer.readu32(source, position)),
+      weight = buffer.readf32(source, position + 4),
+      value = buffer.readu16(source, position + 8),
+      enchantment = buffer.readu16(source, position + 10),
     }
   end,
-  { ENAM = S 'enchanting', INDX = bipedObject },
+  { ENAM = stringField 'enchanting', INDX = bipedObject },
   {
     enchanting = '',
     bipedObjects = function() return {} end,
@@ -1223,12 +1324,12 @@ item(
   'RepairItem',
   'RIDT',
   16,
-  function(b, p)
+  function(source, position)
     return {
-      weight = buffer.readf32(b, p),
-      value = buffer.readu32(b, p + 4),
-      uses = buffer.readu32(b, p + 8),
-      quality = buffer.readf32(b, p + 12),
+      weight = buffer.readf32(source, position),
+      value = buffer.readu32(source, position + 4),
+      uses = buffer.readu32(source, position + 8),
+      quality = buffer.readf32(source, position + 12),
     }
   end
 )
@@ -1238,39 +1339,39 @@ item(
   'Apparatus',
   'AADT',
   16,
-  function(b, p)
+  function(source, position)
     return {
-      apparatusType = nameOf(Enums.ApparatusType, buffer.readu32(b, p)),
-      quality = buffer.readf32(b, p + 4),
-      weight = buffer.readf32(b, p + 8),
-      value = buffer.readu32(b, p + 12),
+      apparatusType = nameOf(Enums.ApparatusType, buffer.readu32(source, position)),
+      quality = buffer.readf32(source, position + 4),
+      weight = buffer.readf32(source, position + 8),
+      value = buffer.readu32(source, position + 12),
     }
   end
 )
 
-local function toolData(b: buffer, p: number): Value
+local function toolData(source: buffer, position: number): Value
   return {
-    weight = buffer.readf32(b, p),
-    value = buffer.readu32(b, p + 4),
-    quality = buffer.readf32(b, p + 8),
-    uses = buffer.readu32(b, p + 12),
+    weight = buffer.readf32(source, position),
+    value = buffer.readu32(source, position + 4),
+    quality = buffer.readf32(source, position + 8),
+    uses = buffer.readu32(source, position + 12),
   }
 end
 
 item('LOCK', 'Lockpick', 'LKDT', 16, toolData)
 item('PROB', 'Probe', 'PBDT', 16, toolData)
 
-local function ingredientData(b: buffer, p: number): Value
+local function ingredientData(source: buffer, position: number): Value
   local effects, skills, attributes = table.create(4), table.create(4), table.create(4)
-  for i = 0, 3 do
-    effects[i + 1] = enum32(Enums.EffectId, b, p + 8 + i * 4)
-    skills[i + 1] = enum32(Enums.SkillId, b, p + 24 + i * 4)
-    attributes[i + 1] = enum32(Enums.AttributeId, b, p + 40 + i * 4)
+  for index = 0, 3 do
+    effects[index + 1] = enum32(Enums.EffectId, source, position + 8 + index * 4)
+    skills[index + 1] = enum32(Enums.SkillId, source, position + 24 + index * 4)
+    attributes[index + 1] = enum32(Enums.AttributeId, source, position + 40 + index * 4)
   end
 
   return {
-    weight = buffer.readf32(b, p),
-    value = buffer.readu32(b, p + 4),
+    weight = buffer.readf32(source, position),
+    value = buffer.readu32(source, position + 4),
     effects = effects,
     skills = skills,
     attributes = attributes,
@@ -1294,16 +1395,16 @@ item(
   'Book',
   'BKDT',
   20,
-  function(b, p)
+  function(source, position)
     return {
-      weight = buffer.readf32(b, p),
-      value = buffer.readu32(b, p + 4),
-      bookType = nameOf(Enums.BookType, buffer.readu32(b, p + 8)),
-      skill = enum32(Enums.SkillId, b, p + 12),
-      enchantment = buffer.readu32(b, p + 16),
+      weight = buffer.readf32(source, position),
+      value = buffer.readu32(source, position + 4),
+      bookType = nameOf(Enums.BookType, buffer.readu32(source, position + 8)),
+      skill = enum32(Enums.SkillId, source, position + 12),
+      enchantment = buffer.readu32(source, position + 16),
     }
   end,
-  { ENAM = S 'enchanting', TEXT = X 'text' },
+  { ENAM = stringField 'enchanting', TEXT = exactField 'text' },
   {
     enchanting = '',
     text = '',
@@ -1326,24 +1427,24 @@ spec(
   },
 
   {
-    NAME = S 'id',
-    MODL = S 'mesh',
-    TEXT = S 'icon',
-    SCRI = S 'script',
-    FNAM = S 'name',
-    ALDT = T(
+    NAME = stringField 'id',
+    MODL = stringField 'mesh',
+    TEXT = stringField 'icon',
+    SCRI = stringField 'script',
+    FNAM = stringField 'name',
+    ALDT = structField(
       12,
       'data',
-      function(b, p)
+      function(source, position)
         return {
-          weight = buffer.readf32(b, p),
-          value = buffer.readu32(b, p + 4),
-          flags = flagText(Flags.AlchemyFlags, buffer.readu32(b, p + 8)),
+          weight = buffer.readf32(source, position),
+          value = buffer.readu32(source, position + 4),
+          flags = flagText(Flags.AlchemyFlags, buffer.readu32(source, position + 8)),
         }
       end
     ),
-    ENAM = TP(24, 'effects', effect),
-    DELE = DELE,
+    ENAM = structItem(24, 'effects', effect),
+    DELE = deleted,
   },
   finishFlags
 )
@@ -1361,45 +1462,45 @@ spec(
   },
 
   {
-    NAME = S 'id',
-    MODL = S 'mesh',
-    FNAM = S 'name',
-    CNDT = T(4, 'encumbrance', readF32),
-    FLAG = T(4, 'containerFlags', readU32),
-    SCRI = S 'script',
-    NPCO = TPS(36, 'inventory', inventoryItem),
-    DELE = DELE,
+    NAME = stringField 'id',
+    MODL = stringField 'mesh',
+    FNAM = stringField 'name',
+    CNDT = structField(4, 'encumbrance', readF32),
+    FLAG = structField(4, 'containerFlags', readU32),
+    SCRI = stringField 'script',
+    NPCO = textStructItem(36, 'inventory', inventoryItem),
+    DELE = deleted,
   },
 
-  function(r)
-    finishFlags(r)
-    r.containerFlags = flagText(Flags.ContainerFlags, r.containerFlags :: number)
+  function(record)
+    finishFlags(record)
+    record.containerFlags = flagText(Flags.ContainerFlags, record.containerFlags :: number)
   end
 )
 
-local function creatureData(b: buffer, p: number): Value
+local function creatureData(source: buffer, position: number): Value
   return {
-    creatureType = nameOf(Enums.CreatureType, buffer.readu32(b, p)),
-    level = buffer.readu32(b, p + 4),
-    strength = buffer.readu32(b, p + 8),
-    intelligence = buffer.readu32(b, p + 12),
-    willpower = buffer.readu32(b, p + 16),
-    agility = buffer.readu32(b, p + 20),
-    speed = buffer.readu32(b, p + 24),
-    endurance = buffer.readu32(b, p + 28),
-    personality = buffer.readu32(b, p + 32),
-    luck = buffer.readu32(b, p + 36),
-    health = buffer.readu32(b, p + 40),
-    magicka = buffer.readu32(b, p + 44),
-    fatigue = buffer.readu32(b, p + 48),
-    soul = buffer.readu32(b, p + 52),
-    combat = buffer.readu32(b, p + 56),
-    magic = buffer.readu32(b, p + 60),
-    stealth = buffer.readu32(b, p + 64),
-    attack1 = { buffer.readu32(b, p + 68), buffer.readu32(b, p + 72) },
-    attack2 = { buffer.readu32(b, p + 76), buffer.readu32(b, p + 80) },
-    attack3 = { buffer.readu32(b, p + 84), buffer.readu32(b, p + 88) },
-    gold = buffer.readu32(b, p + 92),
+    creatureType = nameOf(Enums.CreatureType, buffer.readu32(source, position)),
+    level = buffer.readu32(source, position + 4),
+    strength = buffer.readu32(source, position + 8),
+    intelligence = buffer.readu32(source, position + 12),
+    willpower = buffer.readu32(source, position + 16),
+    agility = buffer.readu32(source, position + 20),
+    speed = buffer.readu32(source, position + 24),
+    endurance = buffer.readu32(source, position + 28),
+    personality = buffer.readu32(source, position + 32),
+    luck = buffer.readu32(source, position + 36),
+    health = buffer.readu32(source, position + 40),
+    magicka = buffer.readu32(source, position + 44),
+    fatigue = buffer.readu32(source, position + 48),
+    soul = buffer.readu32(source, position + 52),
+    combat = buffer.readu32(source, position + 56),
+    magic = buffer.readu32(source, position + 60),
+    stealth = buffer.readu32(source, position + 64),
+    attack1 = { buffer.readu32(source, position + 68), buffer.readu32(source, position + 72) },
+    attack2 = { buffer.readu32(source, position + 76), buffer.readu32(source, position + 80) },
+    attack3 = { buffer.readu32(source, position + 84), buffer.readu32(source, position + 88) },
+    gold = buffer.readu32(source, position + 92),
   }
 end
 
@@ -1425,14 +1526,14 @@ end
 
 do
   local handlers = actorHandlers {
-    NAME = S 'id',
-    MODL = S 'mesh',
-    CNAM = S 'sound',
-    FNAM = S 'name',
-    SCRI = S 'script',
-    NPDT = T(96, 'data', creatureData),
-    XSCL = T(4, 'scale', readF32),
-    DELE = DELE,
+    NAME = stringField 'id',
+    MODL = stringField 'mesh',
+    CNAM = stringField 'sound',
+    FNAM = stringField 'name',
+    SCRI = stringField 'script',
+    NPDT = structField(96, 'data', creatureData),
+    XSCL = structField(4, 'scale', readF32),
+    DELE = deleted,
   }
   handlers.FLAG = actorFlags 'creatureFlags'
   spec(
@@ -1444,43 +1545,43 @@ do
       data = function() return creatureData(Zeros, 0) end,
     },
     handlers,
-    function(r)
-      finishFlags(r)
-      r.creatureFlags = flagText(Flags.CreatureFlags, r.creatureFlags :: number)
+    function(record)
+      finishFlags(record)
+      record.creatureFlags = flagText(Flags.CreatureFlags, record.creatureFlags :: number)
     end
   )
 end
 
-local function npcData(b: buffer, p: number, e: number, r: Value): number
-  local length = u32(b, p, e)
-  p += 4
+local function npcData(source: buffer, position: number, finish: number, record: Value): number
+  local length = u32(source, position, finish)
+  position += 4
   if length == 52 then
-    need(p, 52, e)
-    r.data = {
-      level = buffer.readi16(b, p),
+    need(position, 52, finish)
+    record.data = {
+      level = buffer.readi16(source, position),
       stats = {
-        attributes = u8List(b, p + 2, 8),
-        skills = u8List(b, p + 10, 27),
-        health = buffer.readu16(b, p + 38),
-        magicka = buffer.readu16(b, p + 40),
-        fatigue = buffer.readu16(b, p + 42),
+        attributes = u8List(source, position + 2, 8),
+        skills = u8List(source, position + 10, 27),
+        health = buffer.readu16(source, position + 38),
+        magicka = buffer.readu16(source, position + 40),
+        fatigue = buffer.readu16(source, position + 42),
       },
-      disposition = buffer.readi8(b, p + 44),
-      reputation = buffer.readi8(b, p + 45),
-      rank = buffer.readi8(b, p + 46),
-      gold = buffer.readu32(b, p + 48),
+      disposition = buffer.readi8(source, position + 44),
+      reputation = buffer.readi8(source, position + 45),
+      rank = buffer.readi8(source, position + 46),
+      gold = buffer.readu32(source, position + 48),
     }
-    return p + 52
+    return position + 52
   elseif length == 12 then
-    need(p, 12, e)
-    r.data = {
-      level = buffer.readi16(b, p),
-      disposition = buffer.readi8(b, p + 2),
-      reputation = buffer.readi8(b, p + 3),
-      rank = buffer.readi8(b, p + 4),
-      gold = buffer.readu32(b, p + 8),
+    need(position, 12, finish)
+    record.data = {
+      level = buffer.readi16(source, position),
+      disposition = buffer.readi8(source, position + 2),
+      reputation = buffer.readi8(source, position + 3),
+      rank = buffer.readi8(source, position + 4),
+      gold = buffer.readu32(source, position + 8),
     }
-    return p + 12
+    return position + 12
   end
 
   return fail(`Unexpected length ({length}) for NPC_::NPDT`)
@@ -1488,17 +1589,17 @@ end
 
 do
   local handlers = actorHandlers {
-    NAME = S 'id',
-    MODL = S 'mesh',
-    FNAM = S 'name',
-    RNAM = S 'race',
-    CNAM = S 'class',
-    ANAM = S 'faction',
-    BNAM = S 'head',
-    KNAM = S 'hair',
-    SCRI = S 'script',
+    NAME = stringField 'id',
+    MODL = stringField 'mesh',
+    FNAM = stringField 'name',
+    RNAM = stringField 'race',
+    CNAM = stringField 'class',
+    ANAM = stringField 'faction',
+    BNAM = stringField 'head',
+    KNAM = stringField 'hair',
+    SCRI = stringField 'script',
     NPDT = npcData,
-    DELE = DELE,
+    DELE = deleted,
   }
   handlers.FLAG = actorFlags 'npcFlags'
   spec(
@@ -1514,9 +1615,9 @@ do
       data = function() return { level = 0, disposition = 0, reputation = 0, rank = 0, gold = 0 } end,
     },
     handlers,
-    function(r)
-      finishFlags(r)
-      r.npcFlags = flagText(Flags.NpcFlags, r.npcFlags :: number)
+    function(record)
+      finishFlags(record)
+      record.npcFlags = flagText(Flags.NpcFlags, record.npcFlags :: number)
     end
   )
 end
@@ -1531,34 +1632,34 @@ spec(
   },
 
   {
-    NAME = S 'id',
-    MODL = S 'mesh',
-    FNAM = S 'race',
-    BYDT = T(
+    NAME = stringField 'id',
+    MODL = stringField 'mesh',
+    FNAM = stringField 'race',
+    BYDT = structField(
       4,
       'data',
-      function(b, p)
+      function(source, position)
         return {
-          part = nameOf(Enums.BodypartId, buffer.readu8(b, p)),
-          vampire = buffer.readu8(b, p + 1) ~= 0,
-          flags = flagText(Flags.BodypartFlags, buffer.readu8(b, p + 2)),
-          bodypartType = nameOf(Enums.BodypartType, buffer.readu8(b, p + 3)),
+          part = nameOf(Enums.BodypartId, buffer.readu8(source, position)),
+          vampire = buffer.readu8(source, position + 1) ~= 0,
+          flags = flagText(Flags.BodypartFlags, buffer.readu8(source, position + 2)),
+          bodypartType = nameOf(Enums.BodypartType, buffer.readu8(source, position + 3)),
         }
       end
     ),
-    DELE = DELE,
+    DELE = deleted,
   },
   finishFlags
 )
 
-local function lightData(b: buffer, p: number): Value
+local function lightData(source: buffer, position: number): Value
   return {
-    weight = buffer.readf32(b, p),
-    value = buffer.readu32(b, p + 4),
-    time = buffer.readi32(b, p + 8),
-    radius = buffer.readu32(b, p + 12),
-    color = u8List(b, p + 16, 4),
-    flags = flagText(Flags.LightFlags, buffer.readu32(b, p + 20)),
+    weight = buffer.readf32(source, position),
+    value = buffer.readu32(source, position + 4),
+    time = buffer.readi32(source, position + 8),
+    radius = buffer.readu32(source, position + 12),
+    color = u8List(source, position + 16, 4),
+    flags = flagText(Flags.LightFlags, buffer.readu32(source, position + 20)),
   }
 end
 
@@ -1575,14 +1676,14 @@ spec(
   },
 
   {
-    NAME = S 'id',
-    MODL = S 'mesh',
-    FNAM = S 'name',
-    ITEX = S 'icon',
-    LHDT = T(24, 'data', lightData),
-    SCRI = S 'script',
-    SNAM = S 'sound',
-    DELE = DELE,
+    NAME = stringField 'id',
+    MODL = stringField 'mesh',
+    FNAM = stringField 'name',
+    ITEX = stringField 'icon',
+    LHDT = structField(24, 'data', lightData),
+    SCRI = stringField 'script',
+    SNAM = stringField 'sound',
+    DELE = deleted,
   },
   finishFlags
 )
@@ -1596,31 +1697,31 @@ spec(
   },
 
   {
-    NAME = S 'id',
-    ENDT = T(
+    NAME = stringField 'id',
+    ENDT = structField(
       16,
       'data',
-      function(b, p)
+      function(source, position)
         return {
-          enchantType = nameOf(Enums.EnchantType, buffer.readu32(b, p)),
-          cost = buffer.readu32(b, p + 4),
-          maxCharge = buffer.readu32(b, p + 8),
-          flags = flagText(Flags.EnchantingFlags, buffer.readu32(b, p + 12)),
+          enchantType = nameOf(Enums.EnchantType, buffer.readu32(source, position)),
+          cost = buffer.readu32(source, position + 4),
+          maxCharge = buffer.readu32(source, position + 8),
+          flags = flagText(Flags.EnchantingFlags, buffer.readu32(source, position + 12)),
         }
       end
     ),
-    ENAM = TP(24, 'effects', effect),
-    DELE = DELE,
+    ENAM = structItem(24, 'effects', effect),
+    DELE = deleted,
   },
   finishFlags
 )
 
 spec('ACTI', 'Activator', base { name = '', script = '', mesh = '' }, {
-  NAME = S 'id',
-  MODL = S 'mesh',
-  FNAM = S 'name',
-  SCRI = S 'script',
-  DELE = DELE,
+  NAME = stringField 'id',
+  MODL = stringField 'mesh',
+  FNAM = stringField 'name',
+  SCRI = stringField 'script',
+  DELE = deleted,
 }, finishFlags)
 
 local function leveled(
@@ -1642,38 +1743,42 @@ local function leveled(
     },
 
     {
-      NAME = S 'id',
-      DATA = T(4, flagField, readU32),
-      NNAM = T(1, 'chanceNone', function(b, p) return buffer.readu8(b, p) end),
-      INDX = function(b, p, e)
-        p = expect(b, p, e, 4)
-        need(p, 4, e)
-        return p + 4
+      NAME = stringField 'id',
+      DATA = structField(4, flagField, readU32),
+      NNAM = structField(
+        1,
+        'chanceNone',
+        function(source, position) return buffer.readu8(source, position) end
+      ),
+      INDX = function(source, position, finish)
+        position = expect(source, position, finish, 4)
+        need(position, 4, finish)
+        return position + 4
       end,
 
-      [entryTag] = function(b, p, e, r, enc)
+      [entryTag] = function(source, position, finish, record, encoding)
         local entry = { '', 0 }
-        table.insert(r[listField] :: { unknown }, entry)
-        entry[1], p = str(b, p, e, enc)
-        return p
+        table.insert(record[listField] :: { unknown }, entry)
+        entry[1], position = text(source, position, finish, encoding)
+        return position
       end,
 
-      INTV = function(b, p, e, r)
-        p = expect(b, p, e, 2)
-        need(p, 2, e)
-        local entries = r[listField] :: { { unknown } }
+      INTV = function(source, position, finish, record)
+        position = expect(source, position, finish, 2)
+        need(position, 2, finish)
+        local entries = record[listField] :: { { unknown } }
         local last = entries[#entries]
         if not last then fail(`PC Level provided without a corresponding {kind} id`) end
 
-        last[2] = buffer.readu16(b, p)
-        return p + 2
+        last[2] = buffer.readu16(source, position)
+        return position + 2
       end,
-      DELE = DELE,
+      DELE = deleted,
     },
 
-    function(r)
-      finishFlags(r)
-      r[flagField] = flagText(set, r[flagField] :: number)
+    function(record)
+      finishFlags(record)
+      record[flagField] = flagText(set, record[flagField] :: number)
     end
   )
 end
@@ -1691,7 +1796,7 @@ leveled(
 
 --[[ CELL ]]
 
-local REFR = 'REFR'
+local RefrName = 'REFR'
 
 --- The subrecord tags the hand-written decoders below test, as numbers.
 local CodedTags = {
@@ -1731,95 +1836,102 @@ local CodedTags = {
   'LUAD',
 }
 
-local C: { [string]: number } = {}
+local Codes: { [string]: number } = {}
 for _, name in CodedTags do
-  C[name] = Tags.code(name)
+  Codes[name] = Tags.code(name)
 end
 
 --- Zeroes a vector's non-finite components.
 local function finite(vector: { number })
-  for i = 1, 3 do
-    local v = vector[i]
-    if v ~= v or v == math.huge or v == -math.huge then vector[i] = 0 end
+  for index = 1, 3 do
+    local component = vector[index]
+    if component ~= component or component == math.huge or component == -math.huge then
+      vector[index] = 0
+    end
   end
 end
 
 --- One reference's subrecords after its FRMR, up to its DATA or DELE (`Reference::load`).
-local function reference(b: buffer, p: number, e: number, enc: string): (Value, number)
+local function reference(
+  source: buffer,
+  position: number,
+  finish: number,
+  encoding: string
+): (Value, number)
   local ref: Value =
     { id = '', temporary = false, translation = { 0, 0, 0 }, rotation = { 0, 0, 0 } }
-  while p < e do
-    if e - p < 4 then fail(`partial tag at offset {p}`) end
+  while position < finish do
+    if finish - position < 4 then fail(`partial tag at offset {position}`) end
 
-    local tag = buffer.readu32(b, p)
-    p += 4
-    if tag == C.NAME then
-      ref.id, p = str(b, p, e, enc)
-    elseif tag == C.UNAM then
-      p = expect(b, p, e, 1)
-      need(p, 1, e)
-      ref.blocked = buffer.readu8(b, p)
-      p += 1
-    elseif tag == C.XSCL then
-      p = expect(b, p, e, 4)
-      need(p, 4, e)
-      ref.scale = buffer.readf32(b, p)
-      p += 4
-    elseif tag == C.ANAM then
-      ref.owner, p = str(b, p, e, enc)
-    elseif tag == C.BNAM then
-      ref.ownerGlobal, p = str(b, p, e, enc)
-    elseif tag == C.CNAM then
-      ref.ownerFaction, p = str(b, p, e, enc)
-    elseif tag == C.INDX then
-      p = expect(b, p, e, 4)
-      need(p, 4, e)
-      ref.ownerFactionRank = buffer.readu32(b, p)
-      p += 4
-    elseif tag == C.XSOL then
-      ref.soul, p = str(b, p, e, enc)
-    elseif tag == C.XCHG then
-      p = expect(b, p, e, 4)
-      need(p, 4, e)
-      ref.chargeLeft = buffer.readu32(b, p)
-      p += 4
-    elseif tag == C.INTV then
-      p = expect(b, p, e, 4)
-      need(p, 4, e)
-      ref.healthLeft = buffer.readi32(b, p)
-      p += 4
-    elseif tag == C.NAM9 then
-      p = expect(b, p, e, 4)
-      need(p, 4, e)
-      ref.objectCount = buffer.readu32(b, p)
-      p += 4
-    elseif tag == C.DODT then
-      p = expect(b, p, e, 24)
-      need(p, 24, e)
-      ref.destination, p = destination(b, p, e, enc)
-    elseif tag == C.FLTV then
-      p = expect(b, p, e, 4)
-      need(p, 4, e)
-      ref.lockLevel = buffer.readi32(b, p)
-      p += 4
-    elseif tag == C.KNAM then
-      ref.key, p = str(b, p, e, enc)
-    elseif tag == C.TNAM then
-      ref.trap, p = str(b, p, e, enc)
-    elseif tag == C.DATA then
-      p = expect(b, p, e, 24)
-      need(p, 24, e)
-      ref.translation = f32List(b, p, 3)
-      ref.rotation = f32List(b, p + 12, 3)
-      p += 24
+    local tag = buffer.readu32(source, position)
+    position += 4
+    if tag == Codes.NAME then
+      ref.id, position = text(source, position, finish, encoding)
+    elseif tag == Codes.UNAM then
+      position = expect(source, position, finish, 1)
+      need(position, 1, finish)
+      ref.blocked = buffer.readu8(source, position)
+      position += 1
+    elseif tag == Codes.XSCL then
+      position = expect(source, position, finish, 4)
+      need(position, 4, finish)
+      ref.scale = buffer.readf32(source, position)
+      position += 4
+    elseif tag == Codes.ANAM then
+      ref.owner, position = text(source, position, finish, encoding)
+    elseif tag == Codes.BNAM then
+      ref.ownerGlobal, position = text(source, position, finish, encoding)
+    elseif tag == Codes.CNAM then
+      ref.ownerFaction, position = text(source, position, finish, encoding)
+    elseif tag == Codes.INDX then
+      position = expect(source, position, finish, 4)
+      need(position, 4, finish)
+      ref.ownerFactionRank = buffer.readu32(source, position)
+      position += 4
+    elseif tag == Codes.XSOL then
+      ref.soul, position = text(source, position, finish, encoding)
+    elseif tag == Codes.XCHG then
+      position = expect(source, position, finish, 4)
+      need(position, 4, finish)
+      ref.chargeLeft = buffer.readu32(source, position)
+      position += 4
+    elseif tag == Codes.INTV then
+      position = expect(source, position, finish, 4)
+      need(position, 4, finish)
+      ref.healthLeft = buffer.readi32(source, position)
+      position += 4
+    elseif tag == Codes.NAM9 then
+      position = expect(source, position, finish, 4)
+      need(position, 4, finish)
+      ref.objectCount = buffer.readu32(source, position)
+      position += 4
+    elseif tag == Codes.DODT then
+      position = expect(source, position, finish, 24)
+      need(position, 24, finish)
+      ref.destination, position = destination(source, position, finish, encoding)
+    elseif tag == Codes.FLTV then
+      position = expect(source, position, finish, 4)
+      need(position, 4, finish)
+      ref.lockLevel = buffer.readi32(source, position)
+      position += 4
+    elseif tag == Codes.KNAM then
+      ref.key, position = text(source, position, finish, encoding)
+    elseif tag == Codes.TNAM then
+      ref.trap, position = text(source, position, finish, encoding)
+    elseif tag == Codes.DATA then
+      position = expect(source, position, finish, 24)
+      need(position, 24, finish)
+      ref.translation = f32List(source, position, 3)
+      ref.rotation = f32List(source, position + 12, 3)
+      position += 24
       break
-    elseif tag == C.DELE then
-      local size = u32(b, p, e)
-      p = skip(p + 4, size, e)
+    elseif tag == Codes.DELE then
+      local size = u32(source, position, finish)
+      position = skip(position + 4, size, finish)
       ref.deleted = true
       break
     else
-      fail(`Unexpected Tag: {REFR}::{Tags.lossy(tag)}`)
+      fail(`Unexpected Tag: {RefrName}::{Tags.lossy(tag)}`)
     end
   end
 
@@ -1832,81 +1944,84 @@ local function reference(b: buffer, p: number, e: number, enc: string): (Value, 
     ref.scale = nil
   end
 
-  return ref, p
+  return ref, position
 end
 
 local function persistent(ref: Value): boolean
   return ref.movedCell ~= nil or ref.destination ~= nil or not ref.temporary
 end
 
-local function cell(b: buffer, s: number, e: number, enc: string): Value
-  local r: Value = { name = '', data = { flags = '', grid = { 0, 0 } } }
-  local flags = buffer.readu32(b, s + 12)
+local function cell(source: buffer, start: number, finish: number, encoding: string): Value
+  local record: Value = { name = '', data = { flags = '', grid = { 0, 0 } } }
+  local flags = buffer.readu32(source, start + 12)
   local references: { [number]: Value } = {}
   local temporary = 0
   local moved: { { number } } = {}
-  local p = s + 16
-  while p < e do
-    if e - p < 4 then fail(`partial tag at offset {p - s}`) end
+  local position = start + 16
+  while position < finish do
+    if finish - position < 4 then fail(`partial tag at offset {position - start}`) end
 
-    local tag = buffer.readu32(b, p)
-    p += 4
-    if tag == C.NAME then
-      r.name, p = str(b, p, e, enc)
-    elseif tag == C.DATA then
-      p = expect(b, p, e, 12)
-      need(p, 12, e)
-      r.data = {
-        flags = flagText(Flags.CellFlags, buffer.readu32(b, p)),
-        grid = { buffer.readi32(b, p + 4), buffer.readi32(b, p + 8) },
+    local tag = buffer.readu32(source, position)
+    position += 4
+    if tag == Codes.NAME then
+      record.name, position = text(source, position, finish, encoding)
+    elseif tag == Codes.DATA then
+      position = expect(source, position, finish, 12)
+      need(position, 12, finish)
+      record.data = {
+        flags = flagText(Flags.CellFlags, buffer.readu32(source, position)),
+        grid = { buffer.readi32(source, position + 4), buffer.readi32(source, position + 8) },
       }
-      p += 12
-    elseif tag == C.RGNN then
-      r.region, p = str(b, p, e, enc)
-    elseif tag == C.NAM5 then
-      p = expect(b, p, e, 4)
-      need(p, 4, e)
-      r.mapColor = u8List(b, p, 4)
-      p += 4
-    elseif tag == C.WHGT then
-      p = expect(b, p, e, 4)
-      need(p, 4, e)
-      r.waterHeight = buffer.readf32(b, p)
-      p += 4
-    elseif tag == C.AMBI then
-      local size = u32(b, p, e)
-      p += 4
-      need(p, 16, e)
-      r.atmosphereData = {
-        ambientColor = u8List(b, p, 4),
-        sunlightColor = u8List(b, p + 4, 4),
-        fogColor = u8List(b, p + 8, 4),
-        fogDensity = buffer.readf32(b, p + 12),
+      position += 12
+    elseif tag == Codes.RGNN then
+      record.region, position = text(source, position, finish, encoding)
+    elseif tag == Codes.NAM5 then
+      position = expect(source, position, finish, 4)
+      need(position, 4, finish)
+      record.mapColor = u8List(source, position, 4)
+      position += 4
+    elseif tag == Codes.WHGT then
+      position = expect(source, position, finish, 4)
+      need(position, 4, finish)
+      record.waterHeight = buffer.readf32(source, position)
+      position += 4
+    elseif tag == Codes.AMBI then
+      local size = u32(source, position, finish)
+      position += 4
+      need(position, 16, finish)
+      record.atmosphereData = {
+        ambientColor = u8List(source, position, 4),
+        sunlightColor = u8List(source, position + 4, 4),
+        fogColor = u8List(source, position + 8, 4),
+        fogDensity = buffer.readf32(source, position + 12),
       }
-      p += 16
+      position += 16
       if size < 16 then fail(`Invalid AMBI Size: {size}`) end
 
-      p = skip(p, size - 16, e)
-    elseif tag == C.NAM0 then
-      p = expect(b, p, e, 4)
-      need(p, 4, e)
-      temporary = buffer.readi32(b, p)
-      p += 4
-    elseif tag == C.MVRF then
-      p = expect(b, p, e, 4)
-      need(p, 4, e)
-      local packed = buffer.readu32(b, p)
-      p = expect(b, p + 4, e, CNDT)
-      p = expect(b, p, e, 8)
-      need(p, 8, e)
-      table.insert(moved, { packed, buffer.readi32(b, p), buffer.readi32(b, p + 4) })
-      p += 8
-    elseif tag == C.FRMR then
-      p = expect(b, p, e, 4)
-      need(p, 4, e)
-      local packed = buffer.readu32(b, p)
+      position = skip(position, size - 16, finish)
+    elseif tag == Codes.NAM0 then
+      position = expect(source, position, finish, 4)
+      need(position, 4, finish)
+      temporary = buffer.readi32(source, position)
+      position += 4
+    elseif tag == Codes.MVRF then
+      position = expect(source, position, finish, 4)
+      need(position, 4, finish)
+      local packed = buffer.readu32(source, position)
+      position = expect(source, position + 4, finish, CndtTag)
+      position = expect(source, position, finish, 8)
+      need(position, 8, finish)
+      table.insert(
+        moved,
+        { packed, buffer.readi32(source, position), buffer.readi32(source, position + 4) }
+      )
+      position += 8
+    elseif tag == Codes.FRMR then
+      position = expect(source, position, finish, 4)
+      need(position, 4, finish)
+      local packed = buffer.readu32(source, position)
       local ref
-      ref, p = reference(b, p + 4, e, enc)
+      ref, position = reference(source, position + 4, finish, encoding)
       ref.mastIndex = bit32.rshift(packed, 24)
       ref.refrIndex = bit32.band(packed, 0x00ffffff)
       ref.temporary = temporary > 0
@@ -1914,14 +2029,14 @@ local function cell(b: buffer, s: number, e: number, enc: string): Value
       references[packed] = ref
       local last = moved[#moved]
       if last and bit32.rshift(last[1], 24) == 0 then last[1] = packed end
-    elseif tag == C.INTV then
-      p = expect(b, p, e, 4)
-      need(p, 4, e)
-      r.waterHeight = f32(buffer.readi32(b, p))
-      p += 4
-    elseif tag == C.DELE then
-      local size = u32(b, p, e)
-      p = skip(p + 4, size, e)
+    elseif tag == Codes.INTV then
+      position = expect(source, position, finish, 4)
+      need(position, 4, finish)
+      record.waterHeight = f32(buffer.readi32(source, position))
+      position += 4
+    elseif tag == Codes.DELE then
+      local size = u32(source, position, finish)
+      position = skip(position + 4, size, finish)
       flags = bit32.bor(flags, 0x20)
     else
       fail(`Unexpected Tag: CELL::{Tags.lossy(tag)}`)
@@ -1931,12 +2046,12 @@ local function cell(b: buffer, s: number, e: number, enc: string): Value
   for _, entry in moved do
     local ref = references[entry[1]]
     if not ref then
-      local grid = (r.data :: Value).grid :: { number }
+      local grid = (record.data :: Value).grid :: { number }
       fail(
         `Unable to resolve moved reference ({bit32.rshift(entry[1], 24)}, {bit32.band(
           entry[1],
           0x00ffffff
-        )}) for cell {r.name} ({grid[1]}, {grid[2]})`
+        )}) for cell {record.name} ({grid[1]}, {grid[2]})`
       )
     end
 
@@ -1948,30 +2063,30 @@ local function cell(b: buffer, s: number, e: number, enc: string): Value
     table.insert(sorted, ref)
   end
 
-  table.sort(sorted, function(a, c)
-    local pa, pc = persistent(a), persistent(c)
-    if pa ~= pc then return pa end
+  table.sort(sorted, function(left, right)
+    local leftPersistent, rightPersistent = persistent(left), persistent(right)
+    if leftPersistent ~= rightPersistent then return leftPersistent end
 
-    local ma, mc = a.mastIndex :: number, c.mastIndex :: number
-    if ma == 0 then ma = 4294967296 end
+    local leftMaster, rightMaster = left.mastIndex :: number, right.mastIndex :: number
+    if leftMaster == 0 then leftMaster = 4294967296 end
 
-    if mc == 0 then mc = 4294967296 end
+    if rightMaster == 0 then rightMaster = 4294967296 end
 
-    if ma ~= mc then return ma < mc end
+    if leftMaster ~= rightMaster then return leftMaster < rightMaster end
 
-    return (a.refrIndex :: number) < (c.refrIndex :: number)
+    return (left.refrIndex :: number) < (right.refrIndex :: number)
   end)
 
-  r.references = sorted
-  r.flags = flagText(Flags.ObjectFlags, flags)
-  return r
+  record.references = sorted
+  record.flags = flagText(Flags.ObjectFlags, flags)
+  return record
 end
 
 --[[ LAND ]]
 
-local function landscape(b: buffer, s: number, e: number): Value
-  local flags = buffer.readu32(b, s + 12)
-  local r: Value = {
+local function landscape(source: buffer, start: number, finish: number): Value
+  local flags = buffer.readu32(source, start + 12)
+  local record: Value = {
     grid = { 0, 0 },
     landscapeFlags = '',
     vertexNormals = { data = ZeroBlob },
@@ -1981,67 +2096,70 @@ local function landscape(b: buffer, s: number, e: number): Value
     textureIndices = { data = '' },
   }
   local heights, worldMap, textures = false, false, false
-  local p = s + 16
-  while p < e do
-    if e - p < 4 then fail(`partial tag at offset {p - s}`) end
+  local position = start + 16
+  while position < finish do
+    if finish - position < 4 then fail(`partial tag at offset {position - start}`) end
 
-    local tag = buffer.readu32(b, p)
-    p += 4
-    if tag == C.INTV then
-      p = expect(b, p, e, 8)
-      need(p, 8, e)
-      r.grid = { buffer.readi32(b, p), buffer.readi32(b, p + 4) }
-      p += 8
-    elseif tag == C.DATA then
-      p = expect(b, p, e, 4)
-      need(p, 4, e)
-      r.landscapeFlags = flagText(Flags.LandscapeFlags, buffer.readu32(b, p))
-      p += 4
-    elseif tag == C.VNML then
-      p = expect(b, p, e, 12675)
-      need(p, 12675, e)
-      r.vertexNormals = { data = base64(b, p, 12675) }
-      p += 12675
-    elseif tag == C.VHGT then
-      p = expect(b, p, e, 4232)
-      need(p, 4232, e)
-      r.vertexHeights = { offset = buffer.readf32(b, p), data = base64(b, p + 4, 4225) }
+    local tag = buffer.readu32(source, position)
+    position += 4
+    if tag == Codes.INTV then
+      position = expect(source, position, finish, 8)
+      need(position, 8, finish)
+      record.grid = { buffer.readi32(source, position), buffer.readi32(source, position + 4) }
+      position += 8
+    elseif tag == Codes.DATA then
+      position = expect(source, position, finish, 4)
+      need(position, 4, finish)
+      record.landscapeFlags = flagText(Flags.LandscapeFlags, buffer.readu32(source, position))
+      position += 4
+    elseif tag == Codes.VNML then
+      position = expect(source, position, finish, 12675)
+      need(position, 12675, finish)
+      record.vertexNormals = { data = base64(source, position, 12675) }
+      position += 12675
+    elseif tag == Codes.VHGT then
+      position = expect(source, position, finish, 4232)
+      need(position, 4232, finish)
+      record.vertexHeights = {
+        offset = buffer.readf32(source, position),
+        data = base64(source, position + 4, 4225),
+      }
       heights = true
-      p += 4232
-    elseif tag == C.WNAM then
-      p = expect(b, p, e, 81)
-      need(p, 81, e)
-      r.worldMapData = { data = base64(b, p, 81) }
+      position += 4232
+    elseif tag == Codes.WNAM then
+      position = expect(source, position, finish, 81)
+      need(position, 81, finish)
+      record.worldMapData = { data = base64(source, position, 81) }
       worldMap = true
-      p += 81
-    elseif tag == C.VCLR then
-      p = expect(b, p, e, 12675)
-      need(p, 12675, e)
-      r.vertexColors = { data = base64(b, p, 12675) }
-      p += 12675
-    elseif tag == C.VTEX then
-      p = expect(b, p, e, 512)
-      need(p, 512, e)
-      r.textureIndices = { data = base64(b, p, 512) }
+      position += 81
+    elseif tag == Codes.VCLR then
+      position = expect(source, position, finish, 12675)
+      need(position, 12675, finish)
+      record.vertexColors = { data = base64(source, position, 12675) }
+      position += 12675
+    elseif tag == Codes.VTEX then
+      position = expect(source, position, finish, 512)
+      need(position, 512, finish)
+      record.textureIndices = { data = base64(source, position, 512) }
       textures = true
-      p += 512
-    elseif tag == C.DELE then
-      local size = u32(b, p, e)
-      p = skip(p + 4, size, e)
+      position += 512
+    elseif tag == Codes.DELE then
+      local size = u32(source, position, finish)
+      position = skip(position + 4, size, finish)
       flags = bit32.bor(flags, 0x20)
     else
       fail(`Unexpected Tag: LAND::{Tags.lossy(tag)}`)
     end
   end
 
-  if not heights then (r.vertexHeights :: Value).data = base64(Zeros, 0, 4225) end
+  if not heights then (record.vertexHeights :: Value).data = base64(Zeros, 0, 4225) end
 
-  if not worldMap then (r.worldMapData :: Value).data = base64(Zeros, 0, 81) end
+  if not worldMap then (record.worldMapData :: Value).data = base64(Zeros, 0, 81) end
 
-  if not textures then (r.textureIndices :: Value).data = base64(Zeros, 0, 512) end
+  if not textures then (record.textureIndices :: Value).data = base64(Zeros, 0, 512) end
 
-  r.flags = flagText(Flags.ObjectFlags, flags)
-  return r
+  record.flags = flagText(Flags.ObjectFlags, flags)
+  return record
 end
 
 --[[ PGRD ]]
@@ -2060,45 +2178,45 @@ spec(
   end,
 
   {
-    NAME = S 'cell',
-    DATA = T(
+    NAME = stringField 'cell',
+    DATA = structField(
       12,
       'data',
-      function(b, p)
+      function(source, position)
         return {
-          grid = { buffer.readi32(b, p), buffer.readi32(b, p + 4) },
-          granularity = buffer.readu16(b, p + 8),
-          pointCount = buffer.readu16(b, p + 10),
+          grid = { buffer.readi32(source, position), buffer.readi32(source, position + 4) },
+          granularity = buffer.readu16(source, position + 8),
+          pointCount = buffer.readu16(source, position + 10),
         }
       end
     ),
-    PGRP = function(b, p, e, r)
-      local length = u32(b, p, e)
-      p += 4
+    PGRP = function(source, position, finish, record)
+      local length = u32(source, position, finish)
+      position += 4
       local count = length // 16
       local points = table.create(count)
-      for i = 1, count do
-        need(p, 16, e)
-        points[i] = {
-          location = i32List(b, p, 3),
-          autoGenerated = buffer.readu8(b, p + 12),
-          connectionCount = buffer.readu8(b, p + 13),
+      for index = 1, count do
+        need(position, 16, finish)
+        points[index] = {
+          location = i32List(source, position, 3),
+          autoGenerated = buffer.readu8(source, position + 12),
+          connectionCount = buffer.readu8(source, position + 13),
         }
-        p += 16
+        position += 16
       end
 
-      r.points = points
-      return p
+      record.points = points
+      return position
     end,
 
-    PGRC = function(b, p, e, r)
-      local length = u32(b, p, e)
+    PGRC = function(source, position, finish, record)
+      local length = u32(source, position, finish)
       local count = length // 4
-      need(p + 4, count * 4, e)
-      r.connections = base64(b, p + 4, count * 4, count)
-      return p + 4 + count * 4
+      need(position + 4, count * 4, finish)
+      record.connections = base64(source, position + 4, count * 4, count)
+      return position + 4 + count * 4
     end,
-    DELE = DELE,
+    DELE = deleted,
   },
   finishFlags
 )
@@ -2106,26 +2224,26 @@ spec(
 --[[ DIAL and INFO ]]
 
 spec('DIAL', 'Dialogue', base { dialogueType = 'Topic' }, {
-  NAME = S 'id',
-  DATA = function(b, p, e, r)
-    local size = u32(b, p, e)
-    p += 4
+  NAME = stringField 'id',
+  DATA = function(source, position, finish, record)
+    local size = u32(source, position, finish)
+    position += 4
     if size == 1 then
-      need(p, 1, e)
-      r.dialogueType = nameOf(Enums.DialogueType, buffer.readu8(b, p))
-      return p + 1
+      need(position, 1, finish)
+      record.dialogueType = nameOf(Enums.DialogueType, buffer.readu8(source, position))
+      return position + 1
     end
 
-    return skip(p, size, e)
+    return skip(position, size, finish)
   end,
-  DELE = DELE,
+  DELE = deleted,
 }, finishFlags)
 
 local function quest(state: string): Handler
-  return function(b, p, e, r)
-    local size = u32(b, p, e)
-    r.questState = state
-    return skip(p + 4, size, e)
+  return function(source, position, finish, record)
+    local size = u32(source, position, finish)
+    record.questState = state
+    return skip(position + 4, size, finish)
   end
 end
 
@@ -2157,83 +2275,83 @@ spec(
   },
 
   {
-    INAM = S 'id',
-    PNAM = S 'prevId',
-    NNAM = S 'nextId',
-    DATA = T(
+    INAM = stringField 'id',
+    PNAM = stringField 'prevId',
+    NNAM = stringField 'nextId',
+    DATA = structField(
       12,
       'data',
-      function(b, p)
+      function(source, position)
         return {
-          dialogueType = nameOf(Enums.DialogueType, buffer.readu32(b, p)),
-          disposition = buffer.readi32(b, p + 4),
-          speakerRank = buffer.readi8(b, p + 8),
-          speakerSex = nameOf(Enums.Sex, buffer.readi8(b, p + 9)),
-          playerRank = buffer.readi8(b, p + 10),
+          dialogueType = nameOf(Enums.DialogueType, buffer.readu32(source, position)),
+          disposition = buffer.readi32(source, position + 4),
+          speakerRank = buffer.readi8(source, position + 8),
+          speakerSex = nameOf(Enums.Sex, buffer.readi8(source, position + 9)),
+          playerRank = buffer.readi8(source, position + 10),
         }
       end
     ),
-    ONAM = S 'speakerId',
-    RNAM = S 'speakerRace',
-    CNAM = S 'speakerClass',
-    FNAM = S 'speakerFaction',
-    ANAM = S 'speakerCell',
-    DNAM = S 'playerFaction',
-    SNAM = S 'soundPath',
-    NAME = X 'text',
+    ONAM = stringField 'speakerId',
+    RNAM = stringField 'speakerRace',
+    CNAM = stringField 'speakerClass',
+    FNAM = stringField 'speakerFaction',
+    ANAM = stringField 'speakerCell',
+    DNAM = stringField 'playerFaction',
+    SNAM = stringField 'soundPath',
+    NAME = exactField 'text',
     QSTN = quest 'Name',
     QSTF = quest 'Finished',
     QSTR = quest 'Restart',
-    SCVR = function(b, p, e, r, enc)
-      local length = u32(b, p, e)
-      p += 4
-      need(p, 5, e)
-      local index = buffer.readu8(b, p)
+    SCVR = function(source, position, finish, record, encoding)
+      local length = u32(source, position, finish)
+      position += 4
+      need(position, 5, finish)
+      local index = buffer.readu8(source, position)
       local filter: Value = {
-        filterType = nameOf(Enums.FilterType, buffer.readu8(b, p + 1)),
-        ['function'] = nameOf(Enums.FilterFunction, buffer.readu16(b, p + 2)),
-        comparison = nameOf(Enums.FilterComparison, buffer.readu8(b, p + 4)),
+        filterType = nameOf(Enums.FilterType, buffer.readu8(source, position + 1)),
+        ['function'] = nameOf(Enums.FilterFunction, buffer.readu16(source, position + 2)),
+        comparison = nameOf(Enums.FilterComparison, buffer.readu8(source, position + 4)),
       }
-      p += 5
+      position += 5
       if length < 5 then fail(`DialogueInfo: Invalid filter size: {length}`) end
 
-      filter.id = fixed(b, p, e, length - 5, enc)
-      p += length - 5
+      filter.id = fixed(source, position, finish, length - 5, encoding)
+      position += length - 5
       if index < 48 then fail 'DialogueInfo: Invalid filter index' end
 
       filter.index = index - 48
       filter.value = { type = 'Float', data = 0 }
-      table.insert(r.filters :: { unknown }, filter)
-      return p
+      table.insert(record.filters :: { unknown }, filter)
+      return position
     end,
 
-    FLTV = function(b, p, e, r)
-      p = expect(b, p, e, 4)
-      need(p, 4, e)
-      local filters = r.filters :: { Value }
+    FLTV = function(source, position, finish, record)
+      position = expect(source, position, finish, 4)
+      need(position, 4, finish)
+      local filters = record.filters :: { Value }
       local last = filters[#filters]
       if not last then
         fail 'Info filter value was provided without a corresponding filter definition.'
       end
 
-      last.value = { type = 'Float', data = buffer.readf32(b, p) }
-      return p + 4
+      last.value = { type = 'Float', data = buffer.readf32(source, position) }
+      return position + 4
     end,
 
-    INTV = function(b, p, e, r)
-      p = expect(b, p, e, 4)
-      need(p, 4, e)
-      local filters = r.filters :: { Value }
+    INTV = function(source, position, finish, record)
+      position = expect(source, position, finish, 4)
+      need(position, 4, finish)
+      local filters = record.filters :: { Value }
       local last = filters[#filters]
       if not last then
         fail 'Info filter value was provided without a corresponding filter definition.'
       end
 
-      last.value = { type = 'Integer', data = buffer.readi32(b, p) }
-      return p + 4
+      last.value = { type = 'Integer', data = buffer.readi32(source, position) }
+      return position + 4
     end,
-    BNAM = X 'scriptText',
-    DELE = DELE,
+    BNAM = exactField 'scriptText',
+    DELE = deleted,
   },
   finishFlags
 )
@@ -2265,73 +2383,80 @@ local function finishConfig(config: Value): Value
   return config
 end
 
-local function scriptConfigList(b: buffer, s: number, e: number, enc: string): Value
+local function scriptConfigList(
+  source: buffer,
+  start: number,
+  finish: number,
+  encoding: string
+): Value
   local scripts: { Value } = {}
   local config = emptyConfig()
-  local flags = buffer.readu32(b, s + 12)
+  local flags = buffer.readu32(source, start + 12)
   local last: number? = nil
-  local p = s + 16
-  while p < e do
-    if e - p < 4 then fail(`partial tag at offset {p - s}`) end
+  local position = start + 16
+  while position < finish do
+    if finish - position < 4 then fail(`partial tag at offset {position - start}`) end
 
-    local tag = buffer.readu32(b, p)
-    p += 4
-    if tag == C.LUAS then
+    local tag = buffer.readu32(source, position)
+    position += 4
+    if tag == Codes.LUAS then
       if not isEmptyConfig(config) then
         table.insert(scripts, finishConfig(config))
         config = emptyConfig()
       end
 
-      config.path, p = str(b, p, e, enc)
-    elseif tag == C.LUAF then
-      local size = u32(b, p, e)
-      p += 4
+      config.path, position = text(source, position, finish, encoding)
+    elseif tag == Codes.LUAF then
+      local size = u32(source, position, finish)
+      position += 4
       if size < 4 or size % 4 ~= 0 then fail(`Invalid LUAF Size: {size}`) end
 
-      need(p, 4, e)
-      config.flags = buffer.readu32(b, p)
-      p += 4
+      need(position, 4, finish)
+      config.flags = buffer.readu32(source, position)
+      position += 4
       for _ = 1, size // 4 - 1 do
-        table.insert(config.types :: { unknown }, fixed(b, p, e, 4, enc))
-        p += 4
+        table.insert(config.types :: { unknown }, fixed(source, position, finish, 4, encoding))
+        position += 4
       end
-    elseif tag == C.LUAI then
-      p = skip(p, 4, e)
-      need(p, 9, e)
+    elseif tag == Codes.LUAI then
+      position = skip(position, 4, finish)
+      need(position, 9, finish)
       table.insert(config.instances :: { unknown }, {
-        attach = buffer.readu8(b, p) ~= 0,
-        refIdx = buffer.readu32(b, p + 1),
-        mastIdx = buffer.readi32(b, p + 5),
+        attach = buffer.readu8(source, position) ~= 0,
+        refIdx = buffer.readu32(source, position + 1),
+        mastIdx = buffer.readi32(source, position + 5),
         data = 'AAAAAA==',
       })
-      p += 9
-    elseif tag == C.LUAR then
-      local size = u32(b, p, e)
-      p += 4
-      need(p, 1, e)
-      local attach = buffer.readu8(b, p) ~= 0
-      p += 1
+      position += 9
+    elseif tag == Codes.LUAR then
+      local size = u32(source, position, finish)
+      position += 4
+      need(position, 1, finish)
+      local attach = buffer.readu8(source, position) ~= 0
+      position += 1
       if size == 0 then fail 'Invalid LUAR Size: 0' end
 
-      local id = fixed(b, p, e, size - 1, enc)
-      p += size - 1
+      local id = fixed(source, position, finish, size - 1, encoding)
+      position += size - 1
       table.insert(config.records :: { unknown }, { attach = attach, id = id, data = 'AAAAAA==' })
-    elseif tag == C.LUAD then
-      local size = u32(b, p, e)
-      p += 4
-      if p + size > e then fail(`length {size} exceeds the {e - p} bytes remaining`) end
+    elseif tag == Codes.LUAD then
+      local size = u32(source, position, finish)
+      position += 4
+      if position + size > finish then
+        fail(`length {size} exceeds the {finish - position} bytes remaining`)
+      end
 
-      local data = base64(b, p, size, size)
-      p += size
-      if last == C.LUAF then
+      local data = base64(source, position, size, size)
+      position += size
+      if last == Codes.LUAF then
         config.initData = data
-      elseif last == C.LUAI then
+      elseif last == Codes.LUAI then
         local instances = config.instances :: { Value }
         local instance = instances[#instances]
         if not instance then fail 'LUAD without a LUAI' end
 
         instance.data = data
-      elseif last == C.LUAR then
+      elseif last == Codes.LUAR then
         local records = config.records :: { Value }
         local record = records[#records]
         if not record then fail 'LUAD without a LUAR' end
@@ -2365,7 +2490,7 @@ end
 local function special(
   tag: string,
   name: string,
-  custom: (b: buffer, s: number, e: number, enc: string) -> Value,
+  custom: (source: buffer, start: number, finish: number, encoding: string) -> Value,
   init: () -> Value
 )
   local entry: Spec = { tag = tag, name = name, init = init, handlers = {}, custom = custom }
@@ -2383,11 +2508,16 @@ special(
   end
 )
 
-special('LAND', 'Landscape', function(b, s, e) return landscape(b, s, e) end, function()
-  local empty = buffer.create(16)
-  buffer.writeu32(empty, 0, Tags.code 'LAND')
-  return landscape(empty, 0, 16)
-end)
+special(
+  'LAND',
+  'Landscape',
+  function(source, start, finish) return landscape(source, start, finish) end,
+  function()
+    local empty = buffer.create(16)
+    buffer.writeu32(empty, 0, Tags.code 'LAND')
+    return landscape(empty, 0, 16)
+  end
+)
 
 special(
   'LUAL',
@@ -2396,37 +2526,37 @@ special(
   function() return { scripts = {}, flags = '' } end
 )
 
---- Decodes the record whose bytes are `[s, e)` of `b`, its text in `enc`. Nil for a tag no record
---- type has.
-local function decode(b: buffer, s: number, e: number, enc: string): Value?
-  local entry = ByCode[buffer.readu32(b, s)]
+--- Decodes the record whose bytes are `[start, finish)` of `source`, its text in `encoding`. Nil
+--- for a tag no record type has.
+local function decode(source: buffer, start: number, finish: number, encoding: string): Value?
+  local entry = ByCode[buffer.readu32(source, start)]
   if not entry then return nil end
 
   if entry.custom then
-    local value = entry.custom(b, s, e, enc)
+    local value = entry.custom(source, start, finish, encoding)
     value.type = entry.name
     return value
   end
 
-  local r = entry.init()
-  r.flags = buffer.readu32(b, s + 12)
+  local record = entry.init()
+  record.flags = buffer.readu32(source, start + 12)
   local handlers = entry.handlers
-  local p = s + 16
-  while p < e do
-    if e - p < 4 then fail(`partial tag at offset {p - s}`) end
+  local position = start + 16
+  while position < finish do
+    if finish - position < 4 then fail(`partial tag at offset {position - start}`) end
 
-    local tag = buffer.readu32(b, p)
+    local tag = buffer.readu32(source, position)
     local handler = handlers[tag]
     if not handler then fail(`Unexpected Tag: {entry.tag}::{Tags.lossy(tag)}`) end
 
-    p = handler(b, p + 4, e, r, enc)
+    position = handler(source, position + 4, finish, record, encoding)
   end
 
-  local finish = entry.finish
-  if finish then finish(r, s) end
+  local finalize = entry.finish
+  if finalize then finalize(record, start) end
 
-  r.type = entry.name
-  return r
+  record.type = entry.name
+  return record
 end
 
 --- A default value of the record type named `name` (`Book`) or tagged `name` (`BOOK`): what a

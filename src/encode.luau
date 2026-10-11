@@ -1275,7 +1275,7 @@ local function landBlob(writer: Writer, from: Value, path: string, size: number)
   Writer.copy(writer, data, 0, size)
 end
 
-Encoders.Landscape = function(writer, record, _enc, bits)
+Encoders.Landscape = function(writer, record, _encoding, bits)
   header(writer, 'INTV', 8)
   i32s(writer, listOf(record, 'grid', 'value'), 2, 'grid')
   local land = flags(Flags.LandscapeFlags, record, 'landscapeFlags', 'value')
