@@ -23,15 +23,15 @@ local Enums = Schema.Enums
 local Flags = Schema.Flags
 
 type Value = Decode.Value
-type W = Writer.Writer
+type Writer = Writer.Writer
 
 local function fail(message: string): never error(message, 0) end
 
 local function isList(value: unknown): boolean
   if type(value) ~= 'table' then return false end
 
-  local t = value :: { [unknown]: unknown }
-  return next(t) == nil or t[1] ~= nil
+  local members = value :: { [unknown]: unknown }
+  return next(members) == nil or members[1] ~= nil
 end
 
 --- `value` laid over `default`: missing fields take the default's, structs merge field by field.
@@ -43,14 +43,14 @@ local function merge(default: unknown, value: unknown): unknown
   end
 
   local out: Value = {}
-  local d = default :: Value
-  local v = value :: Value
-  for key, fallback in d do
-    out[key] = merge(fallback, v[key])
+  local defaultFields = default :: Value
+  local valueFields = value :: Value
+  for key, fallback in defaultFields do
+    out[key] = merge(fallback, valueFields[key])
   end
 
-  for key, field in v do
-    if d[key] == nil then out[key] = field end
+  for key, field in valueFields do
+    if defaultFields[key] == nil then out[key] = field end
   end
 
   return out
@@ -58,10 +58,10 @@ end
 
 --[[ Field access, checked ]]
 
-local function field(t: Value, key: string, path: string): unknown return t[key] end
+local function field(from: Value, key: string, path: string): unknown return from[key] end
 
-local function num(t: Value, key: string, path: string): number
-  local value = field(t, key, path)
+local function numberOf(from: Value, key: string, path: string): number
+  local value = field(from, key, path)
   if type(value) ~= 'number' then
     return fail(`{path}.{key}: expected number, got {type(value)}`)
   end
@@ -69,8 +69,8 @@ local function num(t: Value, key: string, path: string): number
   return value
 end
 
-local function str(t: Value, key: string, path: string): string
-  local value = field(t, key, path)
+local function stringOf(from: Value, key: string, path: string): string
+  local value = field(from, key, path)
   if type(value) ~= 'string' then
     return fail(`{path}.{key}: expected string, got {type(value)}`)
   end
@@ -78,42 +78,44 @@ local function str(t: Value, key: string, path: string): string
   return value
 end
 
-local function tab(t: Value, key: string, path: string): Value
-  local value = field(t, key, path)
+local function tableOf(from: Value, key: string, path: string): Value
+  local value = field(from, key, path)
   if type(value) ~= 'table' then fail(`{path}.{key}: expected table, got {type(value)}`) end
 
   return value :: Value
 end
 
-local function list(t: Value, key: string, path: string): { unknown }
-  local value = field(t, key, path)
+local function listOf(from: Value, key: string, path: string): { unknown }
+  local value = field(from, key, path)
   if type(value) ~= 'table' then fail(`{path}.{key}: expected list, got {type(value)}`) end
 
   return value :: { unknown }
 end
 
-local function numAt(items: { unknown }, i: number, path: string): number
-  local value = items[i]
-  if type(value) ~= 'number' then return fail(`{path}[{i}]: expected number, got {type(value)}`) end
+local function numberAt(items: { unknown }, index: number, path: string): number
+  local value = items[index]
+  if type(value) ~= 'number' then
+    return fail(`{path}[{index}]: expected number, got {type(value)}`)
+  end
 
   return value
 end
 
-local function enum(e: Schema.Enum, t: Value, key: string, path: string): number
-  return Schema.valueOf(e, t[key], `{path}.{key}`)
+local function enum(enumeration: Schema.Enum, from: Value, key: string, path: string): number
+  return Schema.valueOf(enumeration, from[key], `{path}.{key}`)
 end
 
-local function flags(set: Schema.Flags, t: Value, key: string, path: string): number
-  return Schema.flagBits(set, t[key], `{path}.{key}`)
+local function flags(set: Schema.Flags, from: Value, key: string, path: string): number
+  return Schema.flagBits(set, from[key], `{path}.{key}`)
 end
 
 --[[ Writing ]]
 
-local function tag(w: W, name: string) Writer.u32(w, Tags.code(name)) end
+local function tag(writer: Writer, name: string) Writer.u32(writer, Tags.code(name)) end
 
 --- Text in the code page, cut at its first NUL (`Writer::encode`).
-local function encodeText(value: string, enc: string): string
-  local encoded = Text.encode(value, enc) or fail(`encode error: {value}`)
+local function encodeText(value: string, encoding: string): string
+  local encoded = Text.encode(value, encoding) or fail(`encode error: {value}`)
 
   local nul = string.find(encoded, '\0', 1, true)
   if nul then return string.sub(encoded, 1, nul - 1) end
@@ -122,185 +124,190 @@ local function encodeText(value: string, enc: string): string
 end
 
 --- A length-prefixed, NUL-terminated string (`save_string`).
-local function wString(w: W, value: string, enc: string)
+local function writeString(writer: Writer, value: string, encoding: string)
   if value == '' then
-    Writer.u32(w, 1)
-    Writer.u8(w, 0)
+    Writer.u32(writer, 1)
+    Writer.u8(writer, 0)
     return
   end
 
-  local encoded = Text.encode(value, enc) or fail(`encode error: {value}`)
+  local encoded = Text.encode(value, encoding) or fail(`encode error: {value}`)
 
   local nul = string.find(encoded, '\0', 1, true)
   if nul then
-    Writer.u32(w, nul - 1)
-    Writer.string(w, string.sub(encoded, 1, nul - 1))
+    Writer.u32(writer, nul - 1)
+    Writer.string(writer, string.sub(encoded, 1, nul - 1))
     return
   end
 
-  Writer.u32(w, #encoded + 1)
-  Writer.string(w, encoded)
-  Writer.u8(w, 0)
+  Writer.u32(writer, #encoded + 1)
+  Writer.string(writer, encoded)
+  Writer.u8(writer, 0)
 end
 
 --- A length-prefixed string with every byte kept (`save_exact_string`).
-local function wExact(w: W, value: string, enc: string)
-  local encoded = Text.encode(value, enc) or fail(`encode error: {value}`)
+local function writeExact(writer: Writer, value: string, encoding: string)
+  local encoded = Text.encode(value, encoding) or fail(`encode error: {value}`)
 
-  Writer.u32(w, #encoded)
-  Writer.string(w, encoded)
+  Writer.u32(writer, #encoded)
+  Writer.string(writer, encoded)
 end
 
---- A NUL-padded string of exactly `n` bytes (`FixedString<N>`).
-local function wFixed(w: W, value: string, n: number, enc: string)
-  local encoded = encodeText(value, enc)
-  if #encoded > n then fail(`Invalid string length ({#value} != {n}): {value}`) end
+--- A NUL-padded string of exactly `length` bytes (`FixedString<N>`).
+local function writeFixed(writer: Writer, value: string, length: number, encoding: string)
+  local encoded = encodeText(value, encoding)
+  if #encoded > length then fail(`Invalid string length ({#value} != {length}): {value}`) end
 
-  Writer.string(w, encoded)
-  Writer.zeros(w, n - #encoded)
+  Writer.string(writer, encoded)
+  Writer.zeros(writer, length - #encoded)
 end
 
 --- A string subrecord: its tag, then the string.
-local function sub(w: W, name: string, value: string, enc: string)
-  tag(w, name)
-  wString(w, value, enc)
+local function sub(writer: Writer, name: string, value: string, encoding: string)
+  tag(writer, name)
+  writeString(writer, value, encoding)
 end
 
 --- A string subrecord written only when the string isn't empty.
-local function opt(w: W, name: string, value: string, enc: string)
-  if value ~= '' then sub(w, name, value, enc) end
+local function opt(writer: Writer, name: string, value: string, encoding: string)
+  if value ~= '' then sub(writer, name, value, encoding) end
 end
 
-local function header(w: W, name: string, size: number)
-  tag(w, name)
-  Writer.u32(w, size)
+local function header(writer: Writer, name: string, size: number)
+  tag(writer, name)
+  Writer.u32(writer, size)
 end
 
-local function dele(w: W, bits: number)
+local function dele(writer: Writer, bits: number)
   if not bit32.btest(bits, 0x20) then return end
 
-  header(w, 'DELE', 4)
-  Writer.u32(w, 0)
+  header(writer, 'DELE', 4)
+  Writer.u32(writer, 0)
 end
 
-local function f32s(w: W, items: { unknown }, n: number, path: string)
-  for i = 1, n do
-    Writer.f32(w, numAt(items, i, path))
+local function f32s(writer: Writer, items: { unknown }, count: number, path: string)
+  for index = 1, count do
+    Writer.f32(writer, numberAt(items, index, path))
   end
 end
 
-local function i32s(w: W, items: { unknown }, n: number, path: string)
-  for i = 1, n do
-    Writer.i32(w, numAt(items, i, path))
+local function i32s(writer: Writer, items: { unknown }, count: number, path: string)
+  for index = 1, count do
+    Writer.i32(writer, numberAt(items, index, path))
   end
 end
 
-local function u8s(w: W, items: { unknown }, n: number, path: string)
-  for i = 1, n do
-    Writer.u8(w, numAt(items, i, path))
+local function u8s(writer: Writer, items: { unknown }, count: number, path: string)
+  for index = 1, count do
+    Writer.u8(writer, numberAt(items, index, path))
   end
 end
 
 --- The blob base64 `text` holds, written as is.
-local function blob(w: W, text: string, path: string)
+local function blob(writer: Writer, text: string, path: string)
   local data = Schema.unbase64(text, path)
-  Writer.copy(w, data, 0, buffer.len(data))
+  Writer.copy(writer, data, 0, buffer.len(data))
 end
 
 --- A base64 blob written with its own length prefix (a `Vec<u8>` jess-omwaddon saves whole), its
 --- length checked against `width`-byte elements.
-local function blobWithLength(w: W, text: string, path: string) blob(w, text, path) end
+local function blobWithLength(writer: Writer, text: string, path: string)
+  blob(writer, text, path)
+end
 
 --[[ Structs ]]
 
-local function effect(w: W, e: Value, path: string)
-  Writer.u16(w, Schema.valueOf(Enums.EffectId, e.magicEffect, `{path}.magicEffect`) % 65536)
-  Writer.u8(w, Schema.valueOf(Enums.SkillId, e.skill, `{path}.skill`) % 256)
-  Writer.u8(w, Schema.valueOf(Enums.AttributeId, e.attribute, `{path}.attribute`) % 256)
-  Writer.u32(w, enum(Enums.EffectRange, e, 'range', path))
-  Writer.u32(w, num(e, 'area', path))
-  Writer.u32(w, num(e, 'duration', path))
-  Writer.u32(w, num(e, 'minMagnitude', path))
-  Writer.u32(w, num(e, 'maxMagnitude', path))
+local function effect(writer: Writer, value: Value, path: string)
+  Writer.u16(
+    writer,
+    Schema.valueOf(Enums.EffectId, value.magicEffect, `{path}.magicEffect`) % 65536
+  )
+  Writer.u8(writer, Schema.valueOf(Enums.SkillId, value.skill, `{path}.skill`) % 256)
+  Writer.u8(writer, Schema.valueOf(Enums.AttributeId, value.attribute, `{path}.attribute`) % 256)
+  Writer.u32(writer, enum(Enums.EffectRange, value, 'range', path))
+  Writer.u32(writer, numberOf(value, 'area', path))
+  Writer.u32(writer, numberOf(value, 'duration', path))
+  Writer.u32(writer, numberOf(value, 'minMagnitude', path))
+  Writer.u32(writer, numberOf(value, 'maxMagnitude', path))
 end
 
-local function effects(w: W, r: Value)
-  for i, item in list(r, 'effects', 'value') do
-    header(w, 'ENAM', 24)
-    effect(w, item :: Value, `effects[{i}]`)
+local function effects(writer: Writer, record: Value)
+  for index, item in listOf(record, 'effects', 'value') do
+    header(writer, 'ENAM', 24)
+    effect(writer, item :: Value, `effects[{index}]`)
   end
 end
 
-local function inventory(w: W, r: Value, enc: string)
-  for i, item in list(r, 'inventory', 'value') do
+local function inventory(writer: Writer, record: Value, encoding: string)
+  for index, item in listOf(record, 'inventory', 'value') do
     local pair = item :: { unknown }
-    header(w, 'NPCO', 36)
-    Writer.i32(w, numAt(pair, 1, `inventory[{i}]`))
-    wFixed(w, pair[2] :: string, 32, enc)
+    header(writer, 'NPCO', 36)
+    Writer.i32(writer, numberAt(pair, 1, `inventory[{index}]`))
+    writeFixed(writer, pair[2] :: string, 32, encoding)
   end
 end
 
-local function spells(w: W, r: Value, enc: string)
-  for _, item in list(r, 'spells', 'value') do
-    header(w, 'NPCS', 32)
-    wFixed(w, item :: string, 32, enc)
+local function spells(writer: Writer, record: Value, encoding: string)
+  for _, item in listOf(record, 'spells', 'value') do
+    header(writer, 'NPCS', 32)
+    writeFixed(writer, item :: string, 32, encoding)
   end
 end
 
-local function aiData(w: W, r: Value)
-  local a = tab(r, 'aiData', 'value')
-  header(w, 'AIDT', 12)
-  Writer.u16(w, num(a, 'hello', 'aiData') % 65536)
-  Writer.u8(w, num(a, 'fight', 'aiData') % 256)
-  Writer.u8(w, num(a, 'flee', 'aiData') % 256)
-  Writer.u8(w, num(a, 'alarm', 'aiData') % 256)
-  Writer.zeros(w, 3)
-  Writer.u32(w, flags(Flags.ServiceFlags, a, 'services', 'aiData'))
+local function aiData(writer: Writer, record: Value)
+  local data = tableOf(record, 'aiData', 'value')
+  header(writer, 'AIDT', 12)
+  Writer.u16(writer, numberOf(data, 'hello', 'aiData') % 65536)
+  Writer.u8(writer, numberOf(data, 'fight', 'aiData') % 256)
+  Writer.u8(writer, numberOf(data, 'flee', 'aiData') % 256)
+  Writer.u8(writer, numberOf(data, 'alarm', 'aiData') % 256)
+  Writer.zeros(writer, 3)
+  Writer.u32(writer, flags(Flags.ServiceFlags, data, 'services', 'aiData'))
 end
 
-local function travel(w: W, r: Value, enc: string)
-  for i, item in list(r, 'travelDestinations', 'value') do
-    local d = item :: Value
-    local path = `travelDestinations[{i}]`
-    header(w, 'DODT', 24)
-    f32s(w, list(d, 'translation', path), 3, `{path}.translation`)
-    f32s(w, list(d, 'rotation', path), 3, `{path}.rotation`)
-    opt(w, 'DNAM', str(d, 'cell', path), enc)
+local function travel(writer: Writer, record: Value, encoding: string)
+  for index, item in listOf(record, 'travelDestinations', 'value') do
+    local destination = item :: Value
+    local path = `travelDestinations[{index}]`
+    header(writer, 'DODT', 24)
+    f32s(writer, listOf(destination, 'translation', path), 3, `{path}.translation`)
+    f32s(writer, listOf(destination, 'rotation', path), 3, `{path}.rotation`)
+    opt(writer, 'DNAM', stringOf(destination, 'cell', path), encoding)
   end
 end
 
-local function packages(w: W, r: Value, enc: string)
-  for i, item in list(r, 'aiPackages', 'value') do
-    local a = item :: Value
-    local path = `aiPackages[{i}]`
-    local kind = a.type
+local function packages(writer: Writer, record: Value, encoding: string)
+  for index, item in listOf(record, 'aiPackages', 'value') do
+    local package = item :: Value
+    local path = `aiPackages[{index}]`
+    local kind = package.type
     if kind == 'Travel' then
-      header(w, 'AI_T', 16)
-      f32s(w, list(a, 'location', path), 3, path)
-      Writer.u8(w, num(a, 'reset', path))
-      Writer.zeros(w, 3)
+      header(writer, 'AI_T', 16)
+      f32s(writer, listOf(package, 'location', path), 3, path)
+      Writer.u8(writer, numberOf(package, 'reset', path))
+      Writer.zeros(writer, 3)
     elseif kind == 'Wander' then
-      header(w, 'AI_W', 14)
-      Writer.u16(w, num(a, 'distance', path))
-      Writer.u16(w, num(a, 'duration', path))
-      Writer.u8(w, num(a, 'gameHour', path))
-      for k = 2, 9 do
-        Writer.u8(w, num(a, `idle{k}`, path))
+      header(writer, 'AI_W', 14)
+      Writer.u16(writer, numberOf(package, 'distance', path))
+      Writer.u16(writer, numberOf(package, 'duration', path))
+      Writer.u8(writer, numberOf(package, 'gameHour', path))
+      for idleIndex = 2, 9 do
+        Writer.u8(writer, numberOf(package, `idle{idleIndex}`, path))
       end
 
-      Writer.u8(w, num(a, 'reset', path) % 256)
+      Writer.u8(writer, numberOf(package, 'reset', path) % 256)
     elseif kind == 'Escort' or kind == 'Follow' then
-      header(w, if kind == 'Escort' then 'AI_E' else 'AI_F', 48)
-      f32s(w, list(a, 'location', path), 3, path)
-      Writer.u16(w, num(a, 'duration', path))
-      wFixed(w, str(a, 'target', path), 32, enc)
-      Writer.u8(w, num(a, 'reset', path))
-      Writer.zeros(w, 1)
-      opt(w, 'CNDT', (a.cell :: string?) or '', enc)
+      header(writer, if kind == 'Escort' then 'AI_E' else 'AI_F', 48)
+      f32s(writer, listOf(package, 'location', path), 3, path)
+      Writer.u16(writer, numberOf(package, 'duration', path))
+      writeFixed(writer, stringOf(package, 'target', path), 32, encoding)
+      Writer.u8(writer, numberOf(package, 'reset', path))
+      Writer.zeros(writer, 1)
+      opt(writer, 'CNDT', (package.cell :: string?) or '', encoding)
     elseif kind == 'Activate' then
-      header(w, 'AI_A', 33)
-      wFixed(w, str(a, 'target', path), 32, enc)
-      Writer.u8(w, num(a, 'reset', path))
+      header(writer, 'AI_A', 33)
+      writeFixed(writer, stringOf(package, 'target', path), 32, encoding)
+      Writer.u8(writer, numberOf(package, 'reset', path))
     else
       fail(
         `{path}.type: unknown variant '{tostring(kind)}', expected one of Activate, Escort, Follow, Travel, Wander`
@@ -309,71 +316,71 @@ local function packages(w: W, r: Value, enc: string)
   end
 end
 
-local function bipedObjects(w: W, r: Value, enc: string)
-  for i, item in list(r, 'bipedObjects', 'value') do
-    local o = item :: Value
-    local path = `bipedObjects[{i}]`
-    header(w, 'INDX', 1)
-    Writer.u8(w, enum(Enums.BipedObjectType, o, 'bipedObjectType', path))
-    opt(w, 'BNAM', str(o, 'maleBodypart', path), enc)
-    opt(w, 'CNAM', str(o, 'femaleBodypart', path), enc)
+local function bipedObjects(writer: Writer, record: Value, encoding: string)
+  for index, item in listOf(record, 'bipedObjects', 'value') do
+    local object = item :: Value
+    local path = `bipedObjects[{index}]`
+    header(writer, 'INDX', 1)
+    Writer.u8(writer, enum(Enums.BipedObjectType, object, 'bipedObjectType', path))
+    opt(writer, 'BNAM', stringOf(object, 'maleBodypart', path), encoding)
+    opt(writer, 'CNAM', stringOf(object, 'femaleBodypart', path), encoding)
   end
 end
 
---- `v` clamped to `0.5..2.0`, and whether that's 1 (the default scale, which goes unwritten).
-local function clampScale(v: number): (number, boolean)
-  local scale = math.clamp(v, 0.5, 2)
-  if v ~= v then scale = v end
+--- `value` clamped to `0.5..2.0`, and whether that's 1 (the default scale, which goes unwritten).
+local function clampScale(value: number): (number, boolean)
+  local scale = math.clamp(value, 0.5, 2)
+  if value ~= value then scale = value end
 
   return scale, math.abs(scale - 1) < 1e-6
 end
 
 --[[ Record types ]]
 
-type Encoder = (w: W, r: Value, enc: string, bits: number) -> ()
+type Encoder = (writer: Writer, record: Value, encoding: string, bits: number) -> ()
 
 local Encoders: { [string]: Encoder } = {}
 
 --- `MODL`, `FNAM`, data, `SCRI`, `ITEX`: the shape most items save in.
-local function itemHead(w: W, r: Value, enc: string)
-  sub(w, 'NAME', str(r, 'id', 'value'), enc)
-  opt(w, 'MODL', str(r, 'mesh', 'value'), enc)
-  opt(w, 'FNAM', str(r, 'name', 'value'), enc)
+local function itemHead(writer: Writer, record: Value, encoding: string)
+  sub(writer, 'NAME', stringOf(record, 'id', 'value'), encoding)
+  opt(writer, 'MODL', stringOf(record, 'mesh', 'value'), encoding)
+  opt(writer, 'FNAM', stringOf(record, 'name', 'value'), encoding)
 end
 
-local function itemTail(w: W, r: Value, enc: string)
-  opt(w, 'SCRI', str(r, 'script', 'value'), enc)
-  opt(w, 'ITEX', str(r, 'icon', 'value'), enc)
+local function itemTail(writer: Writer, record: Value, encoding: string)
+  opt(writer, 'SCRI', stringOf(record, 'script', 'value'), encoding)
+  opt(writer, 'ITEX', stringOf(record, 'icon', 'value'), encoding)
 end
 
-Encoders.Header = function(w, r, enc)
-  header(w, 'HEDR', 300)
-  Writer.f32(w, num(r, 'version', 'value'))
-  Writer.u32(w, enum(Enums.FileType, r, 'fileType', 'value'))
-  wFixed(w, str(r, 'author', 'value'), 32, enc)
-  wFixed(w, str(r, 'description', 'value'), 256, enc)
-  Writer.u32(w, num(r, 'numObjects', 'value'))
-  for i, item in list(r, 'masters', 'value') do
+Encoders.Header = function(writer, record, encoding)
+  header(writer, 'HEDR', 300)
+  Writer.f32(writer, numberOf(record, 'version', 'value'))
+  Writer.u32(writer, enum(Enums.FileType, record, 'fileType', 'value'))
+  writeFixed(writer, stringOf(record, 'author', 'value'), 32, encoding)
+  writeFixed(writer, stringOf(record, 'description', 'value'), 256, encoding)
+  Writer.u32(writer, numberOf(record, 'numObjects', 'value'))
+  for index, item in listOf(record, 'masters', 'value') do
     local pair = item :: { unknown }
-    sub(w, 'MAST', pair[1] :: string, enc)
-    header(w, 'DATA', 8)
-    Writer.u64(w, numAt(pair, 2, `masters[{i}]`))
+    sub(writer, 'MAST', pair[1] :: string, encoding)
+    header(writer, 'DATA', 8)
+    Writer.u64(writer, numberAt(pair, 2, `masters[{index}]`))
   end
 end
 
-Encoders.GameSetting = function(w, r, enc)
-  sub(w, 'NAME', str(r, 'id', 'value'), enc)
-  local value = tab(r, 'value', 'value')
+Encoders.GameSetting = function(writer, record, encoding)
+  sub(writer, 'NAME', stringOf(record, 'id', 'value'), encoding)
+  local value = tableOf(record, 'value', 'value')
   local kind = value.type
   if kind == 'String' then
-    tag(w, 'STRV')
-    wExact(w, str(value, 'data', 'value'), enc)
+    tag(writer, 'STRV')
+    writeExact(writer, stringOf(value, 'data', 'value'), encoding)
   elseif kind == 'Float' then
-    header(w, 'FLTV', 4)
-    Writer.f32(w, num(value, 'data', 'value'))
+    header(writer, 'FLTV', 4)
+    Writer.f32(writer, numberOf(value, 'data', 'value'))
   elseif kind == 'Integer' then
-    header(w, 'INTV', 4)
-    Writer.i32(w, num(value, 'data', 'value'))
+    header(writer, 'INTV', 4)
+    Writer.i32(writer, numberOf(value, 'data', 'value'))
   else
     fail(
       `value.value.type: unknown variant '{tostring(kind)}', expected one of Float, Integer, String`
@@ -383,22 +390,22 @@ end
 
 local GlobalTypes = { Float = 102, Long = 108, Short = 115 }
 
-Encoders.GlobalVariable = function(w, r, enc, bits)
-  local id = str(r, 'id', 'value')
-  sub(w, 'NAME', id, enc)
-  local value = tab(r, 'value', 'value')
+Encoders.GlobalVariable = function(writer, record, encoding, bits)
+  local id = stringOf(record, 'id', 'value')
+  sub(writer, 'NAME', id, encoding)
+  local value = tableOf(record, 'value', 'value')
   local kind = value.type :: string
   local code = GlobalTypes[kind]
   if not code then
     fail(`value.value.type: unknown variant '{tostring(kind)}', expected one of Float, Long, Short`)
   end
 
-  local data = num(value, 'data', 'value')
-  header(w, 'FNAM', 1)
-  Writer.u8(w, code)
-  header(w, 'FLTV', 4)
-  Writer.f32(w, data)
-  dele(w, bits)
+  local data = numberOf(value, 'data', 'value')
+  header(writer, 'FNAM', 1)
+  Writer.u8(writer, code)
+  header(writer, 'FLTV', 4)
+  Writer.f32(writer, data)
+  dele(writer, bits)
   -- Disallow values with known precision errors.
   if kind ~= 'Float' then
     local scratch = buffer.create(4)
@@ -407,77 +414,77 @@ Encoders.GlobalVariable = function(w, r, enc, bits)
   end
 end
 
-Encoders.Class = function(w, r, enc, bits)
-  sub(w, 'NAME', str(r, 'id', 'value'), enc)
-  opt(w, 'FNAM', str(r, 'name', 'value'), enc)
-  local d = tab(r, 'data', 'value')
-  header(w, 'CLDT', 60)
-  Writer.i32(w, enum(Enums.AttributeId, d, 'attribute1', 'data'))
-  Writer.i32(w, enum(Enums.AttributeId, d, 'attribute2', 'data'))
-  Writer.i32(w, enum(Enums.Specialization, d, 'specialization', 'data'))
-  for k = 1, 5 do
-    Writer.i32(w, enum(Enums.SkillId, d, `minor{k}`, 'data'))
-    Writer.i32(w, enum(Enums.SkillId, d, `major{k}`, 'data'))
+Encoders.Class = function(writer, record, encoding, bits)
+  sub(writer, 'NAME', stringOf(record, 'id', 'value'), encoding)
+  opt(writer, 'FNAM', stringOf(record, 'name', 'value'), encoding)
+  local data = tableOf(record, 'data', 'value')
+  header(writer, 'CLDT', 60)
+  Writer.i32(writer, enum(Enums.AttributeId, data, 'attribute1', 'data'))
+  Writer.i32(writer, enum(Enums.AttributeId, data, 'attribute2', 'data'))
+  Writer.i32(writer, enum(Enums.Specialization, data, 'specialization', 'data'))
+  for index = 1, 5 do
+    Writer.i32(writer, enum(Enums.SkillId, data, `minor{index}`, 'data'))
+    Writer.i32(writer, enum(Enums.SkillId, data, `major{index}`, 'data'))
   end
 
-  Writer.u32(w, flags(Flags.ClassFlags, d, 'flags', 'data'))
-  Writer.u32(w, flags(Flags.ServiceFlags, d, 'services', 'data'))
-  local description = str(r, 'description', 'value')
+  Writer.u32(writer, flags(Flags.ClassFlags, data, 'flags', 'data'))
+  Writer.u32(writer, flags(Flags.ServiceFlags, data, 'services', 'data'))
+  local description = stringOf(record, 'description', 'value')
   if description ~= '' then
-    tag(w, 'DESC')
-    wExact(w, description, enc)
+    tag(writer, 'DESC')
+    writeExact(writer, description, encoding)
   end
 
-  dele(w, bits)
+  dele(writer, bits)
 end
 
-Encoders.Faction = function(w, r, enc, bits)
-  sub(w, 'NAME', str(r, 'id', 'value'), enc)
-  opt(w, 'FNAM', str(r, 'name', 'value'), enc)
-  for _, name in list(r, 'rankNames', 'value') do
-    header(w, 'RNAM', 32)
-    wFixed(w, name :: string, 32, enc)
+Encoders.Faction = function(writer, record, encoding, bits)
+  sub(writer, 'NAME', stringOf(record, 'id', 'value'), encoding)
+  opt(writer, 'FNAM', stringOf(record, 'name', 'value'), encoding)
+  for _, name in listOf(record, 'rankNames', 'value') do
+    header(writer, 'RNAM', 32)
+    writeFixed(writer, name :: string, 32, encoding)
   end
 
-  local d = tab(r, 'data', 'value')
-  header(w, 'FADT', 240)
-  for _, attribute in list(d, 'favoredAttributes', 'data') do
-    Writer.i32(w, Schema.valueOf(Enums.AttributeId, attribute, 'data.favoredAttributes'))
+  local data = tableOf(record, 'data', 'value')
+  header(writer, 'FADT', 240)
+  for _, attribute in listOf(data, 'favoredAttributes', 'data') do
+    Writer.i32(writer, Schema.valueOf(Enums.AttributeId, attribute, 'data.favoredAttributes'))
   end
 
-  for i, item in list(d, 'requirements', 'data') do
-    local q = item :: Value
-    local path = `data.requirements[{i}]`
-    i32s(w, list(q, 'attributes', path), 2, path)
-    Writer.i32(w, num(q, 'primarySkill', path))
-    Writer.i32(w, num(q, 'favoredSkill', path))
-    Writer.i32(w, num(q, 'reputation', path))
+  for index, item in listOf(data, 'requirements', 'data') do
+    local requirement = item :: Value
+    local path = `data.requirements[{index}]`
+    i32s(writer, listOf(requirement, 'attributes', path), 2, path)
+    Writer.i32(writer, numberOf(requirement, 'primarySkill', path))
+    Writer.i32(writer, numberOf(requirement, 'favoredSkill', path))
+    Writer.i32(writer, numberOf(requirement, 'reputation', path))
   end
 
-  for _, skill in list(d, 'favoredSkills', 'data') do
-    Writer.i32(w, Schema.valueOf(Enums.SkillId, skill, 'data.favoredSkills'))
+  for _, skill in listOf(data, 'favoredSkills', 'data') do
+    Writer.i32(writer, Schema.valueOf(Enums.SkillId, skill, 'data.favoredSkills'))
   end
 
-  Writer.u32(w, flags(Flags.FactionFlags, d, 'flags', 'data'))
-  for i, item in list(r, 'reactions', 'value') do
+  Writer.u32(writer, flags(Flags.FactionFlags, data, 'flags', 'data'))
+  for index, item in listOf(record, 'reactions', 'value') do
     local reaction = item :: Value
-    sub(w, 'ANAM', str(reaction, 'faction', `reactions[{i}]`), enc)
-    header(w, 'INTV', 4)
-    Writer.i32(w, num(reaction, 'reaction', `reactions[{i}]`))
+    sub(writer, 'ANAM', stringOf(reaction, 'faction', `reactions[{index}]`), encoding)
+    header(writer, 'INTV', 4)
+    Writer.i32(writer, numberOf(reaction, 'reaction', `reactions[{index}]`))
   end
 
-  dele(w, bits)
+  dele(writer, bits)
 end
 
-Encoders.Race = function(w, r, enc, bits)
-  sub(w, 'NAME', str(r, 'id', 'value'), enc)
-  opt(w, 'FNAM', str(r, 'name', 'value'), enc)
-  local d = tab(r, 'data', 'value')
-  header(w, 'RADT', 140)
-  local bonuses = tab(d, 'skillBonuses', 'data')
-  for k = 0, 6 do
-    Writer.i32(w, enum(Enums.SkillId, bonuses, `skill_{k}`, 'data.skillBonuses'))
-    Writer.i32(w, num(bonuses, `bonus_{k}`, 'data.skillBonuses'))
+Encoders.Race = function(writer, record, encoding, bits)
+  sub(writer, 'NAME', stringOf(record, 'id', 'value'), encoding)
+  opt(writer, 'FNAM', stringOf(record, 'name', 'value'), encoding)
+  local data = tableOf(record, 'data', 'value')
+  header(writer, 'RADT', 140)
+  local bonuses = tableOf(data, 'skillBonuses', 'data')
+  for index = 0, 6 do
+    Writer.i32(writer, enum(Enums.SkillId, bonuses, `skill_{index}`, 'data.skillBonuses'))
+    Writer.i32(writer, numberOf(bonuses, `bonus_{index}`, 'data.skillBonuses'))
   end
 
   for _, key in
@@ -493,70 +500,70 @@ Encoders.Race = function(w, r, enc, bits)
     }
 
   do
-    i32s(w, list(d, key, 'data'), 2, `data.{key}`)
+    i32s(writer, listOf(data, key, 'data'), 2, `data.{key}`)
   end
 
-  f32s(w, list(d, 'height', 'data'), 2, 'data.height')
-  f32s(w, list(d, 'weight', 'data'), 2, 'data.weight')
-  Writer.u32(w, flags(Flags.RaceFlags, d, 'flags', 'data'))
-  spells(w, r, enc)
-  local description = str(r, 'description', 'value')
+  f32s(writer, listOf(data, 'height', 'data'), 2, 'data.height')
+  f32s(writer, listOf(data, 'weight', 'data'), 2, 'data.weight')
+  Writer.u32(writer, flags(Flags.RaceFlags, data, 'flags', 'data'))
+  spells(writer, record, encoding)
+  local description = stringOf(record, 'description', 'value')
   if description ~= '' then
-    tag(w, 'DESC')
-    wExact(w, description, enc)
+    tag(writer, 'DESC')
+    writeExact(writer, description, encoding)
   end
 
-  dele(w, bits)
+  dele(writer, bits)
 end
 
-Encoders.Sound = function(w, r, enc, bits)
-  sub(w, 'NAME', str(r, 'id', 'value'), enc)
-  opt(w, 'FNAM', str(r, 'soundPath', 'value'), enc)
-  local d = tab(r, 'data', 'value')
-  header(w, 'DATA', 3)
-  Writer.u8(w, num(d, 'volume', 'data'))
-  u8s(w, list(d, 'range', 'data'), 2, 'data.range')
-  dele(w, bits)
+Encoders.Sound = function(writer, record, encoding, bits)
+  sub(writer, 'NAME', stringOf(record, 'id', 'value'), encoding)
+  opt(writer, 'FNAM', stringOf(record, 'soundPath', 'value'), encoding)
+  local data = tableOf(record, 'data', 'value')
+  header(writer, 'DATA', 3)
+  Writer.u8(writer, numberOf(data, 'volume', 'data'))
+  u8s(writer, listOf(data, 'range', 'data'), 2, 'data.range')
+  dele(writer, bits)
 end
 
-Encoders.SoundGen = function(w, r, enc, bits)
-  sub(w, 'NAME', str(r, 'id', 'value'), enc)
-  header(w, 'DATA', 4)
-  Writer.u32(w, enum(Enums.SoundGenType, r, 'soundGenType', 'value'))
-  opt(w, 'CNAM', str(r, 'creature', 'value'), enc)
-  opt(w, 'SNAM', str(r, 'sound', 'value'), enc)
-  dele(w, bits)
+Encoders.SoundGen = function(writer, record, encoding, bits)
+  sub(writer, 'NAME', stringOf(record, 'id', 'value'), encoding)
+  header(writer, 'DATA', 4)
+  Writer.u32(writer, enum(Enums.SoundGenType, record, 'soundGenType', 'value'))
+  opt(writer, 'CNAM', stringOf(record, 'creature', 'value'), encoding)
+  opt(writer, 'SNAM', stringOf(record, 'sound', 'value'), encoding)
+  dele(writer, bits)
 end
 
-Encoders.Skill = function(w, r, enc, bits)
-  header(w, 'INDX', 4)
-  Writer.i32(w, enum(Enums.SkillId, r, 'skillId', 'value'))
-  local d = tab(r, 'data', 'value')
-  header(w, 'SKDT', 24)
-  Writer.i32(w, num(d, 'governingAttribute', 'data'))
-  Writer.i32(w, num(d, 'specialization', 'data'))
-  f32s(w, list(d, 'actions', 'data'), 4, 'data.actions')
-  local description = str(r, 'description', 'value')
+Encoders.Skill = function(writer, record, encoding, bits)
+  header(writer, 'INDX', 4)
+  Writer.i32(writer, enum(Enums.SkillId, record, 'skillId', 'value'))
+  local data = tableOf(record, 'data', 'value')
+  header(writer, 'SKDT', 24)
+  Writer.i32(writer, numberOf(data, 'governingAttribute', 'data'))
+  Writer.i32(writer, numberOf(data, 'specialization', 'data'))
+  f32s(writer, listOf(data, 'actions', 'data'), 4, 'data.actions')
+  local description = stringOf(record, 'description', 'value')
   if description ~= '' then
-    tag(w, 'DESC')
-    wExact(w, description, enc)
+    tag(writer, 'DESC')
+    writeExact(writer, description, encoding)
   end
 
-  dele(w, bits)
+  dele(writer, bits)
 end
 
-Encoders.MagicEffect = function(w, r, enc, bits)
-  header(w, 'INDX', 4)
-  Writer.i32(w, enum(Enums.EffectId, r, 'effectId', 'value'))
-  local d = tab(r, 'data', 'value')
-  header(w, 'MEDT', 36)
-  Writer.u32(w, enum(Enums.EffectSchool, d, 'school', 'data'))
-  Writer.f32(w, num(d, 'baseCost', 'data'))
-  Writer.u32(w, flags(Flags.MagicEffectFlags, d, 'flags', 'data'))
-  i32s(w, list(d, 'color', 'data'), 3, 'data.color')
-  Writer.f32(w, num(d, 'speed', 'data'))
-  Writer.f32(w, num(d, 'size', 'data'))
-  Writer.f32(w, num(d, 'sizeCap', 'data'))
+Encoders.MagicEffect = function(writer, record, encoding, bits)
+  header(writer, 'INDX', 4)
+  Writer.i32(writer, enum(Enums.EffectId, record, 'effectId', 'value'))
+  local data = tableOf(record, 'data', 'value')
+  header(writer, 'MEDT', 36)
+  Writer.u32(writer, enum(Enums.EffectSchool, data, 'school', 'data'))
+  Writer.f32(writer, numberOf(data, 'baseCost', 'data'))
+  Writer.u32(writer, flags(Flags.MagicEffectFlags, data, 'flags', 'data'))
+  i32s(writer, listOf(data, 'color', 'data'), 3, 'data.color')
+  Writer.f32(writer, numberOf(data, 'speed', 'data'))
+  Writer.f32(writer, numberOf(data, 'size', 'data'))
+  Writer.f32(writer, numberOf(data, 'sizeCap', 'data'))
   for _, pair in
     {
       { 'ITEX', 'icon' },
@@ -572,57 +579,57 @@ Encoders.MagicEffect = function(w, r, enc, bits)
     }
 
   do
-    opt(w, pair[1], str(r, pair[2], 'value'), enc)
+    opt(writer, pair[1], stringOf(record, pair[2], 'value'), encoding)
   end
 
-  local description = str(r, 'description', 'value')
+  local description = stringOf(record, 'description', 'value')
   if description ~= '' then
-    tag(w, 'DESC')
-    wExact(w, description, enc)
+    tag(writer, 'DESC')
+    writeExact(writer, description, encoding)
   end
 
-  dele(w, bits)
+  dele(writer, bits)
 end
 
 --- A `Vec<u8>` or `Vec<u32>` blob as jess-omwaddon writes it, with its length first; whether the
 --- vector it holds is empty.
 local function isEmptyBlob(text: string): boolean return text == 'AAAAAA==' end
 
-Encoders.Script = function(w, r, enc, bits)
-  local h = tab(r, 'header', 'value')
-  header(w, 'SCHD', 52)
-  wFixed(w, str(r, 'id', 'value'), 32, enc)
+Encoders.Script = function(writer, record, encoding, bits)
+  local scriptHeader = tableOf(record, 'header', 'value')
+  header(writer, 'SCHD', 52)
+  writeFixed(writer, stringOf(record, 'id', 'value'), 32, encoding)
   for _, key in { 'numShorts', 'numLongs', 'numFloats', 'bytecodeLength', 'variablesLength' } do
-    Writer.u32(w, num(h, key, 'header'))
+    Writer.u32(writer, numberOf(scriptHeader, key, 'header'))
   end
 
-  local variables = str(r, 'variables', 'value')
+  local variables = stringOf(record, 'variables', 'value')
   if not isEmptyBlob(variables) then
-    tag(w, 'SCVR')
-    blobWithLength(w, variables, 'variables')
+    tag(writer, 'SCVR')
+    blobWithLength(writer, variables, 'variables')
   end
 
-  local bytecode = str(r, 'bytecode', 'value')
+  local bytecode = stringOf(record, 'bytecode', 'value')
   if not isEmptyBlob(bytecode) then
-    tag(w, 'SCDT')
-    blobWithLength(w, bytecode, 'bytecode')
+    tag(writer, 'SCDT')
+    blobWithLength(writer, bytecode, 'bytecode')
   end
 
-  local text = str(r, 'text', 'value')
+  local text = stringOf(record, 'text', 'value')
   if text ~= '' then
-    tag(w, 'SCTX')
-    wExact(w, text, enc)
+    tag(writer, 'SCTX')
+    writeExact(writer, text, encoding)
   end
 
-  dele(w, bits)
+  dele(writer, bits)
 end
 
-Encoders.Region = function(w, r, enc, bits)
-  sub(w, 'NAME', str(r, 'id', 'value'), enc)
-  opt(w, 'FNAM', str(r, 'name', 'value'), enc)
-  local c = tab(r, 'weatherChances', 'value')
-  tag(w, 'WEAT')
-  Writer.u32(w, 10)
+Encoders.Region = function(writer, record, encoding, bits)
+  sub(writer, 'NAME', stringOf(record, 'id', 'value'), encoding)
+  opt(writer, 'FNAM', stringOf(record, 'name', 'value'), encoding)
+  local chances = tableOf(record, 'weatherChances', 'value')
+  tag(writer, 'WEAT')
+  Writer.u32(writer, 10)
   for _, key in
     {
       'clear',
@@ -638,130 +645,133 @@ Encoders.Region = function(w, r, enc, bits)
     }
 
   do
-    Writer.u8(w, num(c, key, 'weatherChances'))
+    Writer.u8(writer, numberOf(chances, key, 'weatherChances'))
   end
 
-  opt(w, 'BNAM', str(r, 'sleepCreature', 'value'), enc)
-  header(w, 'CNAM', 4)
-  u8s(w, list(r, 'mapColor', 'value'), 4, 'mapColor')
-  for i, item in list(r, 'sounds', 'value') do
+  opt(writer, 'BNAM', stringOf(record, 'sleepCreature', 'value'), encoding)
+  header(writer, 'CNAM', 4)
+  u8s(writer, listOf(record, 'mapColor', 'value'), 4, 'mapColor')
+  for index, item in listOf(record, 'sounds', 'value') do
     local pair = item :: { unknown }
-    header(w, 'SNAM', 33)
-    wFixed(w, pair[1] :: string, 32, enc)
-    Writer.u8(w, numAt(pair, 2, `sounds[{i}]`))
+    header(writer, 'SNAM', 33)
+    writeFixed(writer, pair[1] :: string, 32, encoding)
+    Writer.u8(writer, numberAt(pair, 2, `sounds[{index}]`))
   end
 
-  dele(w, bits)
+  dele(writer, bits)
 end
 
-Encoders.Birthsign = function(w, r, enc, bits)
-  sub(w, 'NAME', str(r, 'id', 'value'), enc)
-  opt(w, 'FNAM', str(r, 'name', 'value'), enc)
-  opt(w, 'TNAM', str(r, 'texture', 'value'), enc)
-  opt(w, 'DESC', str(r, 'description', 'value'), enc)
-  spells(w, r, enc)
-  dele(w, bits)
+Encoders.Birthsign = function(writer, record, encoding, bits)
+  sub(writer, 'NAME', stringOf(record, 'id', 'value'), encoding)
+  opt(writer, 'FNAM', stringOf(record, 'name', 'value'), encoding)
+  opt(writer, 'TNAM', stringOf(record, 'texture', 'value'), encoding)
+  opt(writer, 'DESC', stringOf(record, 'description', 'value'), encoding)
+  spells(writer, record, encoding)
+  dele(writer, bits)
 end
 
-Encoders.StartScript = function(w, r, enc, bits)
-  sub(w, 'DATA', str(r, 'id', 'value'), enc)
-  opt(w, 'NAME', str(r, 'script', 'value'), enc)
-  dele(w, bits)
+Encoders.StartScript = function(writer, record, encoding, bits)
+  sub(writer, 'DATA', stringOf(record, 'id', 'value'), encoding)
+  opt(writer, 'NAME', stringOf(record, 'script', 'value'), encoding)
+  dele(writer, bits)
 end
 
-Encoders.LandscapeTexture = function(w, r, enc, bits)
-  sub(w, 'NAME', str(r, 'id', 'value'), enc)
-  header(w, 'INTV', 4)
-  Writer.u32(w, num(r, 'index', 'value'))
-  opt(w, 'DATA', str(r, 'fileName', 'value'), enc)
-  dele(w, bits)
+Encoders.LandscapeTexture = function(writer, record, encoding, bits)
+  sub(writer, 'NAME', stringOf(record, 'id', 'value'), encoding)
+  header(writer, 'INTV', 4)
+  Writer.u32(writer, numberOf(record, 'index', 'value'))
+  opt(writer, 'DATA', stringOf(record, 'fileName', 'value'), encoding)
+  dele(writer, bits)
 end
 
-Encoders.Spell = function(w, r, enc, bits)
-  sub(w, 'NAME', str(r, 'id', 'value'), enc)
-  opt(w, 'FNAM', str(r, 'name', 'value'), enc)
-  local d = tab(r, 'data', 'value')
-  header(w, 'SPDT', 12)
-  Writer.u32(w, enum(Enums.SpellType, d, 'spellType', 'data'))
-  Writer.u32(w, num(d, 'cost', 'data'))
-  Writer.u32(w, flags(Flags.SpellFlags, d, 'flags', 'data'))
-  effects(w, r)
-  dele(w, bits)
+Encoders.Spell = function(writer, record, encoding, bits)
+  sub(writer, 'NAME', stringOf(record, 'id', 'value'), encoding)
+  opt(writer, 'FNAM', stringOf(record, 'name', 'value'), encoding)
+  local data = tableOf(record, 'data', 'value')
+  header(writer, 'SPDT', 12)
+  Writer.u32(writer, enum(Enums.SpellType, data, 'spellType', 'data'))
+  Writer.u32(writer, numberOf(data, 'cost', 'data'))
+  Writer.u32(writer, flags(Flags.SpellFlags, data, 'flags', 'data'))
+  effects(writer, record)
+  dele(writer, bits)
 end
 
-Encoders.Static = function(w, r, enc, bits)
-  sub(w, 'NAME', str(r, 'id', 'value'), enc)
-  opt(w, 'MODL', str(r, 'mesh', 'value'), enc)
-  dele(w, bits)
+Encoders.Static = function(writer, record, encoding, bits)
+  sub(writer, 'NAME', stringOf(record, 'id', 'value'), encoding)
+  opt(writer, 'MODL', stringOf(record, 'mesh', 'value'), encoding)
+  dele(writer, bits)
 end
 
-Encoders.Door = function(w, r, enc, bits)
-  itemHead(w, r, enc)
-  opt(w, 'SCRI', str(r, 'script', 'value'), enc)
-  opt(w, 'SNAM', str(r, 'openSound', 'value'), enc)
-  opt(w, 'ANAM', str(r, 'closeSound', 'value'), enc)
-  dele(w, bits)
+Encoders.Door = function(writer, record, encoding, bits)
+  itemHead(writer, record, encoding)
+  opt(writer, 'SCRI', stringOf(record, 'script', 'value'), encoding)
+  opt(writer, 'SNAM', stringOf(record, 'openSound', 'value'), encoding)
+  opt(writer, 'ANAM', stringOf(record, 'closeSound', 'value'), encoding)
+  dele(writer, bits)
 end
 
-Encoders.MiscItem = function(w, r, enc, bits)
-  itemHead(w, r, enc)
-  local d = tab(r, 'data', 'value')
-  header(w, 'MCDT', 12)
-  Writer.f32(w, num(d, 'weight', 'data'))
-  Writer.u32(w, num(d, 'value', 'data'))
-  Writer.u32(w, flags(Flags.MiscItemFlags, d, 'flags', 'data'))
-  itemTail(w, r, enc)
-  dele(w, bits)
+Encoders.MiscItem = function(writer, record, encoding, bits)
+  itemHead(writer, record, encoding)
+  local data = tableOf(record, 'data', 'value')
+  header(writer, 'MCDT', 12)
+  Writer.f32(writer, numberOf(data, 'weight', 'data'))
+  Writer.u32(writer, numberOf(data, 'value', 'data'))
+  Writer.u32(writer, flags(Flags.MiscItemFlags, data, 'flags', 'data'))
+  itemTail(writer, record, encoding)
+  dele(writer, bits)
 end
 
-Encoders.Weapon = function(w, r, enc, bits)
-  itemHead(w, r, enc)
-  local d = tab(r, 'data', 'value')
-  header(w, 'WPDT', 32)
-  Writer.f32(w, num(d, 'weight', 'data'))
-  Writer.u32(w, num(d, 'value', 'data'))
-  Writer.u16(w, enum(Enums.WeaponType, d, 'weaponType', 'data'))
-  Writer.u16(w, num(d, 'health', 'data'))
-  Writer.f32(w, num(d, 'speed', 'data'))
-  Writer.f32(w, num(d, 'reach', 'data'))
-  Writer.u16(w, num(d, 'enchantment', 'data'))
+Encoders.Weapon = function(writer, record, encoding, bits)
+  itemHead(writer, record, encoding)
+  local data = tableOf(record, 'data', 'value')
+  header(writer, 'WPDT', 32)
+  Writer.f32(writer, numberOf(data, 'weight', 'data'))
+  Writer.u32(writer, numberOf(data, 'value', 'data'))
+  Writer.u16(writer, enum(Enums.WeaponType, data, 'weaponType', 'data'))
+  Writer.u16(writer, numberOf(data, 'health', 'data'))
+  Writer.f32(writer, numberOf(data, 'speed', 'data'))
+  Writer.f32(writer, numberOf(data, 'reach', 'data'))
+  Writer.u16(writer, numberOf(data, 'enchantment', 'data'))
   for _, key in { 'chopMin', 'chopMax', 'slashMin', 'slashMax', 'thrustMin', 'thrustMax' } do
-    Writer.u8(w, num(d, key, 'data'))
+    Writer.u8(writer, numberOf(data, key, 'data'))
   end
 
-  Writer.u32(w, flags(Flags.WeaponFlags, d, 'flags', 'data'))
-  itemTail(w, r, enc)
-  opt(w, 'ENAM', str(r, 'enchanting', 'value'), enc)
-  dele(w, bits)
+  Writer.u32(writer, flags(Flags.WeaponFlags, data, 'flags', 'data'))
+  itemTail(writer, record, encoding)
+  opt(writer, 'ENAM', stringOf(record, 'enchanting', 'value'), encoding)
+  dele(writer, bits)
 end
 
-Encoders.Container = function(w, r, enc, bits)
-  itemHead(w, r, enc)
-  header(w, 'CNDT', 4)
-  Writer.f32(w, num(r, 'encumbrance', 'value'))
-  header(w, 'FLAG', 4)
-  Writer.u32(w, flags(Flags.ContainerFlags, r, 'containerFlags', 'value'))
-  opt(w, 'SCRI', str(r, 'script', 'value'), enc)
-  inventory(w, r, enc)
-  dele(w, bits)
+Encoders.Container = function(writer, record, encoding, bits)
+  itemHead(writer, record, encoding)
+  header(writer, 'CNDT', 4)
+  Writer.f32(writer, numberOf(record, 'encumbrance', 'value'))
+  header(writer, 'FLAG', 4)
+  Writer.u32(writer, flags(Flags.ContainerFlags, record, 'containerFlags', 'value'))
+  opt(writer, 'SCRI', stringOf(record, 'script', 'value'), encoding)
+  inventory(writer, record, encoding)
+  dele(writer, bits)
 end
 
 --- An actor's FLAG: its flags with the blood type in bits 10 to 12.
-local function actorFlag(w: W, set: Schema.Flags, r: Value, key: string)
-  local bits = bit32.band(flags(set, r, key, 'value'), bit32.bnot(0x1c00))
-  header(w, 'FLAG', 4)
-  Writer.u32(w, bit32.bor(bits, bit32.lshift(bit32.band(num(r, 'bloodType', 'value'), 7), 10)))
+local function actorFlag(writer: Writer, set: Schema.Flags, record: Value, key: string)
+  local bits = bit32.band(flags(set, record, key, 'value'), bit32.bnot(0x1c00))
+  header(writer, 'FLAG', 4)
+  Writer.u32(
+    writer,
+    bit32.bor(bits, bit32.lshift(bit32.band(numberOf(record, 'bloodType', 'value'), 7), 10))
+  )
 end
 
-Encoders.Creature = function(w, r, enc, bits)
-  sub(w, 'NAME', str(r, 'id', 'value'), enc)
-  opt(w, 'MODL', str(r, 'mesh', 'value'), enc)
-  opt(w, 'CNAM', str(r, 'sound', 'value'), enc)
-  opt(w, 'FNAM', str(r, 'name', 'value'), enc)
-  opt(w, 'SCRI', str(r, 'script', 'value'), enc)
-  local d = tab(r, 'data', 'value')
-  header(w, 'NPDT', 96)
-  Writer.u32(w, enum(Enums.CreatureType, d, 'creatureType', 'data'))
+Encoders.Creature = function(writer, record, encoding, bits)
+  sub(writer, 'NAME', stringOf(record, 'id', 'value'), encoding)
+  opt(writer, 'MODL', stringOf(record, 'mesh', 'value'), encoding)
+  opt(writer, 'CNAM', stringOf(record, 'sound', 'value'), encoding)
+  opt(writer, 'FNAM', stringOf(record, 'name', 'value'), encoding)
+  opt(writer, 'SCRI', stringOf(record, 'script', 'value'), encoding)
+  local data = tableOf(record, 'data', 'value')
+  header(writer, 'NPDT', 96)
+  Writer.u32(writer, enum(Enums.CreatureType, data, 'creatureType', 'data'))
   for _, key in
     {
       'level',
@@ -783,36 +793,36 @@ Encoders.Creature = function(w, r, enc, bits)
     }
 
   do
-    Writer.u32(w, num(d, key, 'data'))
+    Writer.u32(writer, numberOf(data, key, 'data'))
   end
 
   for _, key in { 'attack1', 'attack2', 'attack3' } do
-    local pair = list(d, key, 'data')
-    Writer.u32(w, numAt(pair, 1, `data.{key}`))
-    Writer.u32(w, numAt(pair, 2, `data.{key}`))
+    local pair = listOf(data, key, 'data')
+    Writer.u32(writer, numberAt(pair, 1, `data.{key}`))
+    Writer.u32(writer, numberAt(pair, 2, `data.{key}`))
   end
 
-  Writer.u32(w, num(d, 'gold', 'data'))
-  actorFlag(w, Flags.CreatureFlags, r, 'creatureFlags')
-  local scale = r.scale :: number?
+  Writer.u32(writer, numberOf(data, 'gold', 'data'))
+  actorFlag(writer, Flags.CreatureFlags, record, 'creatureFlags')
+  local scale = record.scale :: number?
   if scale then
     local clamped, default = clampScale(scale)
     if not default then
-      header(w, 'XSCL', 4)
-      Writer.f32(w, clamped)
+      header(writer, 'XSCL', 4)
+      Writer.f32(writer, clamped)
     end
   end
 
-  inventory(w, r, enc)
-  spells(w, r, enc)
-  aiData(w, r)
-  travel(w, r, enc)
-  packages(w, r, enc)
-  dele(w, bits)
+  inventory(writer, record, encoding)
+  spells(writer, record, encoding)
+  aiData(writer, record)
+  travel(writer, record, encoding)
+  packages(writer, record, encoding)
+  dele(writer, bits)
 end
 
-Encoders.Npc = function(w, r, enc, bits)
-  sub(w, 'NAME', str(r, 'id', 'value'), enc)
+Encoders.Npc = function(writer, record, encoding, bits)
+  sub(writer, 'NAME', stringOf(record, 'id', 'value'), encoding)
   for _, pair in
     {
       { 'MODL', 'mesh' },
@@ -826,170 +836,170 @@ Encoders.Npc = function(w, r, enc, bits)
     }
 
   do
-    opt(w, pair[1], str(r, pair[2], 'value'), enc)
+    opt(writer, pair[1], stringOf(record, pair[2], 'value'), encoding)
   end
 
-  local d = tab(r, 'data', 'value')
-  tag(w, 'NPDT')
-  local stats = d.stats :: Value?
+  local data = tableOf(record, 'data', 'value')
+  tag(writer, 'NPDT')
+  local stats = data.stats :: Value?
   if stats then
-    Writer.u32(w, 52)
-    Writer.u16(w, num(d, 'level', 'data') % 65536)
-    u8s(w, list(stats, 'attributes', 'data.stats'), 8, 'data.stats.attributes')
-    u8s(w, list(stats, 'skills', 'data.stats'), 27, 'data.stats.skills')
-    Writer.zeros(w, 1)
-    Writer.u16(w, num(stats, 'health', 'data.stats'))
-    Writer.u16(w, num(stats, 'magicka', 'data.stats'))
-    Writer.u16(w, num(stats, 'fatigue', 'data.stats'))
-    Writer.u8(w, num(d, 'disposition', 'data') % 256)
-    Writer.u8(w, num(d, 'reputation', 'data') % 256)
-    Writer.u8(w, num(d, 'rank', 'data') % 256)
+    Writer.u32(writer, 52)
+    Writer.u16(writer, numberOf(data, 'level', 'data') % 65536)
+    u8s(writer, listOf(stats, 'attributes', 'data.stats'), 8, 'data.stats.attributes')
+    u8s(writer, listOf(stats, 'skills', 'data.stats'), 27, 'data.stats.skills')
+    Writer.zeros(writer, 1)
+    Writer.u16(writer, numberOf(stats, 'health', 'data.stats'))
+    Writer.u16(writer, numberOf(stats, 'magicka', 'data.stats'))
+    Writer.u16(writer, numberOf(stats, 'fatigue', 'data.stats'))
+    Writer.u8(writer, numberOf(data, 'disposition', 'data') % 256)
+    Writer.u8(writer, numberOf(data, 'reputation', 'data') % 256)
+    Writer.u8(writer, numberOf(data, 'rank', 'data') % 256)
   else
-    Writer.u32(w, 12)
-    Writer.u16(w, num(d, 'level', 'data') % 65536)
-    Writer.u8(w, num(d, 'disposition', 'data') % 256)
-    Writer.u8(w, num(d, 'reputation', 'data') % 256)
-    Writer.u8(w, num(d, 'rank', 'data') % 256)
-    Writer.zeros(w, 2)
+    Writer.u32(writer, 12)
+    Writer.u16(writer, numberOf(data, 'level', 'data') % 65536)
+    Writer.u8(writer, numberOf(data, 'disposition', 'data') % 256)
+    Writer.u8(writer, numberOf(data, 'reputation', 'data') % 256)
+    Writer.u8(writer, numberOf(data, 'rank', 'data') % 256)
+    Writer.zeros(writer, 2)
   end
 
-  Writer.zeros(w, 1)
-  Writer.u32(w, num(d, 'gold', 'data'))
-  actorFlag(w, Flags.NpcFlags, r, 'npcFlags')
-  inventory(w, r, enc)
-  spells(w, r, enc)
-  aiData(w, r)
-  travel(w, r, enc)
-  packages(w, r, enc)
-  dele(w, bits)
+  Writer.zeros(writer, 1)
+  Writer.u32(writer, numberOf(data, 'gold', 'data'))
+  actorFlag(writer, Flags.NpcFlags, record, 'npcFlags')
+  inventory(writer, record, encoding)
+  spells(writer, record, encoding)
+  aiData(writer, record)
+  travel(writer, record, encoding)
+  packages(writer, record, encoding)
+  dele(writer, bits)
 end
 
-Encoders.Bodypart = function(w, r, enc, bits)
-  sub(w, 'NAME', str(r, 'id', 'value'), enc)
-  opt(w, 'MODL', str(r, 'mesh', 'value'), enc)
-  opt(w, 'FNAM', str(r, 'race', 'value'), enc)
-  local d = tab(r, 'data', 'value')
-  header(w, 'BYDT', 4)
-  Writer.u8(w, enum(Enums.BodypartId, d, 'part', 'data'))
-  Writer.u8(w, if d.vampire then 1 else 0)
-  Writer.u8(w, flags(Flags.BodypartFlags, d, 'flags', 'data'))
-  Writer.u8(w, enum(Enums.BodypartType, d, 'bodypartType', 'data'))
-  dele(w, bits)
+Encoders.Bodypart = function(writer, record, encoding, bits)
+  sub(writer, 'NAME', stringOf(record, 'id', 'value'), encoding)
+  opt(writer, 'MODL', stringOf(record, 'mesh', 'value'), encoding)
+  opt(writer, 'FNAM', stringOf(record, 'race', 'value'), encoding)
+  local data = tableOf(record, 'data', 'value')
+  header(writer, 'BYDT', 4)
+  Writer.u8(writer, enum(Enums.BodypartId, data, 'part', 'data'))
+  Writer.u8(writer, if data.vampire then 1 else 0)
+  Writer.u8(writer, flags(Flags.BodypartFlags, data, 'flags', 'data'))
+  Writer.u8(writer, enum(Enums.BodypartType, data, 'bodypartType', 'data'))
+  dele(writer, bits)
 end
 
-Encoders.Light = function(w, r, enc, bits)
-  itemHead(w, r, enc)
-  opt(w, 'ITEX', str(r, 'icon', 'value'), enc)
-  local d = tab(r, 'data', 'value')
-  header(w, 'LHDT', 24)
-  Writer.f32(w, num(d, 'weight', 'data'))
-  Writer.u32(w, num(d, 'value', 'data'))
-  Writer.i32(w, num(d, 'time', 'data'))
-  Writer.u32(w, num(d, 'radius', 'data'))
-  u8s(w, list(d, 'color', 'data'), 4, 'data.color')
-  Writer.u32(w, flags(Flags.LightFlags, d, 'flags', 'data'))
-  opt(w, 'SCRI', str(r, 'script', 'value'), enc)
-  opt(w, 'SNAM', str(r, 'sound', 'value'), enc)
-  dele(w, bits)
+Encoders.Light = function(writer, record, encoding, bits)
+  itemHead(writer, record, encoding)
+  opt(writer, 'ITEX', stringOf(record, 'icon', 'value'), encoding)
+  local data = tableOf(record, 'data', 'value')
+  header(writer, 'LHDT', 24)
+  Writer.f32(writer, numberOf(data, 'weight', 'data'))
+  Writer.u32(writer, numberOf(data, 'value', 'data'))
+  Writer.i32(writer, numberOf(data, 'time', 'data'))
+  Writer.u32(writer, numberOf(data, 'radius', 'data'))
+  u8s(writer, listOf(data, 'color', 'data'), 4, 'data.color')
+  Writer.u32(writer, flags(Flags.LightFlags, data, 'flags', 'data'))
+  opt(writer, 'SCRI', stringOf(record, 'script', 'value'), encoding)
+  opt(writer, 'SNAM', stringOf(record, 'sound', 'value'), encoding)
+  dele(writer, bits)
 end
 
-Encoders.Enchanting = function(w, r, enc, bits)
-  sub(w, 'NAME', str(r, 'id', 'value'), enc)
-  local d = tab(r, 'data', 'value')
-  header(w, 'ENDT', 16)
-  Writer.u32(w, enum(Enums.EnchantType, d, 'enchantType', 'data'))
-  Writer.u32(w, num(d, 'cost', 'data'))
-  Writer.u32(w, num(d, 'maxCharge', 'data'))
-  Writer.u32(w, flags(Flags.EnchantingFlags, d, 'flags', 'data'))
-  effects(w, r)
-  dele(w, bits)
+Encoders.Enchanting = function(writer, record, encoding, bits)
+  sub(writer, 'NAME', stringOf(record, 'id', 'value'), encoding)
+  local data = tableOf(record, 'data', 'value')
+  header(writer, 'ENDT', 16)
+  Writer.u32(writer, enum(Enums.EnchantType, data, 'enchantType', 'data'))
+  Writer.u32(writer, numberOf(data, 'cost', 'data'))
+  Writer.u32(writer, numberOf(data, 'maxCharge', 'data'))
+  Writer.u32(writer, flags(Flags.EnchantingFlags, data, 'flags', 'data'))
+  effects(writer, record)
+  dele(writer, bits)
 end
 
-Encoders.Armor = function(w, r, enc, bits)
-  itemHead(w, r, enc)
-  opt(w, 'SCRI', str(r, 'script', 'value'), enc)
-  local d = tab(r, 'data', 'value')
-  header(w, 'AODT', 24)
-  Writer.u32(w, enum(Enums.ArmorType, d, 'armorType', 'data'))
-  Writer.f32(w, num(d, 'weight', 'data'))
+Encoders.Armor = function(writer, record, encoding, bits)
+  itemHead(writer, record, encoding)
+  opt(writer, 'SCRI', stringOf(record, 'script', 'value'), encoding)
+  local data = tableOf(record, 'data', 'value')
+  header(writer, 'AODT', 24)
+  Writer.u32(writer, enum(Enums.ArmorType, data, 'armorType', 'data'))
+  Writer.f32(writer, numberOf(data, 'weight', 'data'))
   for _, key in { 'value', 'health', 'enchantment', 'armorRating' } do
-    Writer.u32(w, num(d, key, 'data'))
+    Writer.u32(writer, numberOf(data, key, 'data'))
   end
 
-  opt(w, 'ITEX', str(r, 'icon', 'value'), enc)
-  bipedObjects(w, r, enc)
-  opt(w, 'ENAM', str(r, 'enchanting', 'value'), enc)
-  dele(w, bits)
+  opt(writer, 'ITEX', stringOf(record, 'icon', 'value'), encoding)
+  bipedObjects(writer, record, encoding)
+  opt(writer, 'ENAM', stringOf(record, 'enchanting', 'value'), encoding)
+  dele(writer, bits)
 end
 
-Encoders.Clothing = function(w, r, enc, bits)
-  itemHead(w, r, enc)
-  local d = tab(r, 'data', 'value')
-  header(w, 'CTDT', 12)
-  Writer.u32(w, enum(Enums.ClothingType, d, 'clothingType', 'data'))
-  Writer.f32(w, num(d, 'weight', 'data'))
-  Writer.u16(w, num(d, 'value', 'data'))
-  Writer.u16(w, num(d, 'enchantment', 'data'))
-  itemTail(w, r, enc)
-  bipedObjects(w, r, enc)
-  opt(w, 'ENAM', str(r, 'enchanting', 'value'), enc)
-  dele(w, bits)
+Encoders.Clothing = function(writer, record, encoding, bits)
+  itemHead(writer, record, encoding)
+  local data = tableOf(record, 'data', 'value')
+  header(writer, 'CTDT', 12)
+  Writer.u32(writer, enum(Enums.ClothingType, data, 'clothingType', 'data'))
+  Writer.f32(writer, numberOf(data, 'weight', 'data'))
+  Writer.u16(writer, numberOf(data, 'value', 'data'))
+  Writer.u16(writer, numberOf(data, 'enchantment', 'data'))
+  itemTail(writer, record, encoding)
+  bipedObjects(writer, record, encoding)
+  opt(writer, 'ENAM', stringOf(record, 'enchanting', 'value'), encoding)
+  dele(writer, bits)
 end
 
-Encoders.RepairItem = function(w, r, enc, bits)
-  itemHead(w, r, enc)
-  local d = tab(r, 'data', 'value')
-  header(w, 'RIDT', 16)
-  Writer.f32(w, num(d, 'weight', 'data'))
-  Writer.u32(w, num(d, 'value', 'data'))
-  Writer.u32(w, num(d, 'uses', 'data'))
-  Writer.f32(w, num(d, 'quality', 'data'))
-  itemTail(w, r, enc)
-  dele(w, bits)
+Encoders.RepairItem = function(writer, record, encoding, bits)
+  itemHead(writer, record, encoding)
+  local data = tableOf(record, 'data', 'value')
+  header(writer, 'RIDT', 16)
+  Writer.f32(writer, numberOf(data, 'weight', 'data'))
+  Writer.u32(writer, numberOf(data, 'value', 'data'))
+  Writer.u32(writer, numberOf(data, 'uses', 'data'))
+  Writer.f32(writer, numberOf(data, 'quality', 'data'))
+  itemTail(writer, record, encoding)
+  dele(writer, bits)
 end
 
-Encoders.Activator = function(w, r, enc, bits)
-  itemHead(w, r, enc)
-  opt(w, 'SCRI', str(r, 'script', 'value'), enc)
-  dele(w, bits)
+Encoders.Activator = function(writer, record, encoding, bits)
+  itemHead(writer, record, encoding)
+  opt(writer, 'SCRI', stringOf(record, 'script', 'value'), encoding)
+  dele(writer, bits)
 end
 
-Encoders.Apparatus = function(w, r, enc, bits)
-  itemHead(w, r, enc)
-  opt(w, 'SCRI', str(r, 'script', 'value'), enc)
-  local d = tab(r, 'data', 'value')
-  header(w, 'AADT', 16)
-  Writer.u32(w, enum(Enums.ApparatusType, d, 'apparatusType', 'data'))
-  Writer.f32(w, num(d, 'quality', 'data'))
-  Writer.f32(w, num(d, 'weight', 'data'))
-  Writer.u32(w, num(d, 'value', 'data'))
-  opt(w, 'ITEX', str(r, 'icon', 'value'), enc)
-  dele(w, bits)
+Encoders.Apparatus = function(writer, record, encoding, bits)
+  itemHead(writer, record, encoding)
+  opt(writer, 'SCRI', stringOf(record, 'script', 'value'), encoding)
+  local data = tableOf(record, 'data', 'value')
+  header(writer, 'AADT', 16)
+  Writer.u32(writer, enum(Enums.ApparatusType, data, 'apparatusType', 'data'))
+  Writer.f32(writer, numberOf(data, 'quality', 'data'))
+  Writer.f32(writer, numberOf(data, 'weight', 'data'))
+  Writer.u32(writer, numberOf(data, 'value', 'data'))
+  opt(writer, 'ITEX', stringOf(record, 'icon', 'value'), encoding)
+  dele(writer, bits)
 end
 
 local function tool(dataTag: string): Encoder
-  return function(w, r, enc, bits)
-    itemHead(w, r, enc)
-    local d = tab(r, 'data', 'value')
-    header(w, dataTag, 16)
-    Writer.f32(w, num(d, 'weight', 'data'))
-    Writer.u32(w, num(d, 'value', 'data'))
-    Writer.f32(w, num(d, 'quality', 'data'))
-    Writer.u32(w, num(d, 'uses', 'data'))
-    itemTail(w, r, enc)
-    dele(w, bits)
+  return function(writer, record, encoding, bits)
+    itemHead(writer, record, encoding)
+    local data = tableOf(record, 'data', 'value')
+    header(writer, dataTag, 16)
+    Writer.f32(writer, numberOf(data, 'weight', 'data'))
+    Writer.u32(writer, numberOf(data, 'value', 'data'))
+    Writer.f32(writer, numberOf(data, 'quality', 'data'))
+    Writer.u32(writer, numberOf(data, 'uses', 'data'))
+    itemTail(writer, record, encoding)
+    dele(writer, bits)
   end
 end
 
 Encoders.Lockpick = tool 'LKDT'
 Encoders.Probe = tool 'PBDT'
 
-Encoders.Ingredient = function(w, r, enc, bits)
-  itemHead(w, r, enc)
-  local d = tab(r, 'data', 'value')
-  header(w, 'IRDT', 56)
-  Writer.f32(w, num(d, 'weight', 'data'))
-  Writer.u32(w, num(d, 'value', 'data'))
+Encoders.Ingredient = function(writer, record, encoding, bits)
+  itemHead(writer, record, encoding)
+  local data = tableOf(record, 'data', 'value')
+  header(writer, 'IRDT', 56)
+  Writer.f32(writer, numberOf(data, 'weight', 'data'))
+  Writer.u32(writer, numberOf(data, 'value', 'data'))
   for _, pair in
     {
       { 'effects', Enums.EffectId },
@@ -999,48 +1009,48 @@ Encoders.Ingredient = function(w, r, enc, bits)
 
   do
     local key = pair[1] :: string
-    for _, item in list(d, key, 'data') do
-      Writer.i32(w, Schema.valueOf(pair[2] :: Schema.Enum, item, `data.{key}`))
+    for _, item in listOf(data, key, 'data') do
+      Writer.i32(writer, Schema.valueOf(pair[2] :: Schema.Enum, item, `data.{key}`))
     end
   end
 
-  itemTail(w, r, enc)
-  dele(w, bits)
+  itemTail(writer, record, encoding)
+  dele(writer, bits)
 end
 
-Encoders.Book = function(w, r, enc, bits)
-  itemHead(w, r, enc)
-  local d = tab(r, 'data', 'value')
-  header(w, 'BKDT', 20)
-  Writer.f32(w, num(d, 'weight', 'data'))
-  Writer.u32(w, num(d, 'value', 'data'))
-  Writer.u32(w, enum(Enums.BookType, d, 'bookType', 'data'))
-  Writer.i32(w, enum(Enums.SkillId, d, 'skill', 'data'))
-  Writer.u32(w, num(d, 'enchantment', 'data'))
-  itemTail(w, r, enc)
-  local text = str(r, 'text', 'value')
+Encoders.Book = function(writer, record, encoding, bits)
+  itemHead(writer, record, encoding)
+  local data = tableOf(record, 'data', 'value')
+  header(writer, 'BKDT', 20)
+  Writer.f32(writer, numberOf(data, 'weight', 'data'))
+  Writer.u32(writer, numberOf(data, 'value', 'data'))
+  Writer.u32(writer, enum(Enums.BookType, data, 'bookType', 'data'))
+  Writer.i32(writer, enum(Enums.SkillId, data, 'skill', 'data'))
+  Writer.u32(writer, numberOf(data, 'enchantment', 'data'))
+  itemTail(writer, record, encoding)
+  local text = stringOf(record, 'text', 'value')
   if text ~= '' then
-    tag(w, 'TEXT')
-    wExact(w, text, enc)
+    tag(writer, 'TEXT')
+    writeExact(writer, text, encoding)
   end
 
-  opt(w, 'ENAM', str(r, 'enchanting', 'value'), enc)
-  dele(w, bits)
+  opt(writer, 'ENAM', stringOf(record, 'enchanting', 'value'), encoding)
+  dele(writer, bits)
 end
 
-Encoders.Alchemy = function(w, r, enc, bits)
-  sub(w, 'NAME', str(r, 'id', 'value'), enc)
-  opt(w, 'MODL', str(r, 'mesh', 'value'), enc)
-  opt(w, 'TEXT', str(r, 'icon', 'value'), enc)
-  opt(w, 'SCRI', str(r, 'script', 'value'), enc)
-  opt(w, 'FNAM', str(r, 'name', 'value'), enc)
-  local d = tab(r, 'data', 'value')
-  header(w, 'ALDT', 12)
-  Writer.f32(w, num(d, 'weight', 'data'))
-  Writer.u32(w, num(d, 'value', 'data'))
-  Writer.u32(w, flags(Flags.AlchemyFlags, d, 'flags', 'data'))
-  effects(w, r)
-  dele(w, bits)
+Encoders.Alchemy = function(writer, record, encoding, bits)
+  sub(writer, 'NAME', stringOf(record, 'id', 'value'), encoding)
+  opt(writer, 'MODL', stringOf(record, 'mesh', 'value'), encoding)
+  opt(writer, 'TEXT', stringOf(record, 'icon', 'value'), encoding)
+  opt(writer, 'SCRI', stringOf(record, 'script', 'value'), encoding)
+  opt(writer, 'FNAM', stringOf(record, 'name', 'value'), encoding)
+  local data = tableOf(record, 'data', 'value')
+  header(writer, 'ALDT', 12)
+  Writer.f32(writer, numberOf(data, 'weight', 'data'))
+  Writer.u32(writer, numberOf(data, 'value', 'data'))
+  Writer.u32(writer, flags(Flags.AlchemyFlags, data, 'flags', 'data'))
+  effects(writer, record)
+  dele(writer, bits)
 end
 
 local function leveled(
@@ -1049,25 +1059,25 @@ local function leveled(
   listField: string,
   entryTag: string
 ): Encoder
-  return function(w, r, enc, bits)
-    sub(w, 'NAME', str(r, 'id', 'value'), enc)
-    header(w, 'DATA', 4)
-    Writer.u32(w, flags(set, r, flagField, 'value'))
-    header(w, 'NNAM', 1)
-    Writer.u8(w, num(r, 'chanceNone', 'value'))
-    local entries = list(r, listField, 'value')
+  return function(writer, record, encoding, bits)
+    sub(writer, 'NAME', stringOf(record, 'id', 'value'), encoding)
+    header(writer, 'DATA', 4)
+    Writer.u32(writer, flags(set, record, flagField, 'value'))
+    header(writer, 'NNAM', 1)
+    Writer.u8(writer, numberOf(record, 'chanceNone', 'value'))
+    local entries = listOf(record, listField, 'value')
     if #entries > 0 then
-      header(w, 'INDX', 4)
-      Writer.u32(w, #entries)
-      for i, item in entries do
+      header(writer, 'INDX', 4)
+      Writer.u32(writer, #entries)
+      for index, item in entries do
         local pair = item :: { unknown }
-        sub(w, entryTag, pair[1] :: string, enc)
-        header(w, 'INTV', 2)
-        Writer.u16(w, numAt(pair, 2, `{listField}[{i}]`))
+        sub(writer, entryTag, pair[1] :: string, encoding)
+        header(writer, 'INTV', 2)
+        Writer.u16(writer, numberAt(pair, 2, `{listField}[{index}]`))
       end
     end
 
-    dele(w, bits)
+    dele(writer, bits)
   end
 end
 
@@ -1081,121 +1091,131 @@ local function persistent(ref: Value): boolean
   return ref.movedCell ~= nil or ref.destination ~= nil or not ref.temporary
 end
 
-local function reference(w: W, ref: Value, enc: string, path: string)
-  sub(w, 'NAME', str(ref, 'id', path), enc)
+local function reference(writer: Writer, ref: Value, encoding: string, path: string)
+  sub(writer, 'NAME', stringOf(ref, 'id', path), encoding)
   local blocked = ref.blocked :: number?
   if blocked then
-    header(w, 'UNAM', 1)
-    Writer.u8(w, blocked)
+    header(writer, 'UNAM', 1)
+    Writer.u8(writer, blocked)
   end
 
   local scale = ref.scale :: number?
   if scale then
     local clamped, default = clampScale(scale)
-    if not default or num(ref, 'mastIndex', path) ~= 0 then
-      header(w, 'XSCL', 4)
-      Writer.f32(w, clamped)
+    if not default or numberOf(ref, 'mastIndex', path) ~= 0 then
+      header(writer, 'XSCL', 4)
+      Writer.f32(writer, clamped)
     end
   end
 
   for _, pair in { { 'ANAM', 'owner' }, { 'BNAM', 'ownerGlobal' }, { 'CNAM', 'ownerFaction' } } do
     local value = ref[pair[2]] :: string?
-    if value then sub(w, pair[1], value, enc) end
+    if value then sub(writer, pair[1], value, encoding) end
   end
 
   local rank = ref.ownerFactionRank :: number?
   if rank then
-    header(w, 'INDX', 4)
-    Writer.u32(w, rank)
+    header(writer, 'INDX', 4)
+    Writer.u32(writer, rank)
   end
 
   local soul = ref.soul :: string?
-  if soul then sub(w, 'XSOL', soul, enc) end
+  if soul then sub(writer, 'XSOL', soul, encoding) end
 
   local charge = ref.chargeLeft :: number?
   if charge then
-    header(w, 'XCHG', 4)
-    Writer.u32(w, charge)
+    header(writer, 'XCHG', 4)
+    Writer.u32(writer, charge)
   end
 
   local health = ref.healthLeft :: number?
   if health then
-    header(w, 'INTV', 4)
-    Writer.i32(w, health)
+    header(writer, 'INTV', 4)
+    Writer.i32(writer, health)
   end
 
   local count = ref.objectCount :: number?
   if count then
-    header(w, 'NAM9', 4)
-    Writer.u32(w, count)
+    header(writer, 'NAM9', 4)
+    Writer.u32(writer, count)
   end
 
   local destination = ref.destination :: Value?
   if destination then
-    header(w, 'DODT', 24)
-    f32s(w, list(destination, 'translation', path), 3, `{path}.destination.translation`)
-    f32s(w, list(destination, 'rotation', path), 3, `{path}.destination.rotation`)
-    opt(w, 'DNAM', str(destination, 'cell', path), enc)
+    header(writer, 'DODT', 24)
+    f32s(writer, listOf(destination, 'translation', path), 3, `{path}.destination.translation`)
+    f32s(writer, listOf(destination, 'rotation', path), 3, `{path}.destination.rotation`)
+    opt(writer, 'DNAM', stringOf(destination, 'cell', path), encoding)
   end
 
   local lock = ref.lockLevel :: number?
   if lock then
-    header(w, 'FLTV', 4)
-    Writer.i32(w, lock)
+    header(writer, 'FLTV', 4)
+    Writer.i32(writer, lock)
   end
 
   for _, pair in { { 'KNAM', 'key' }, { 'TNAM', 'trap' } } do
     local value = ref[pair[2]] :: string?
-    if value then sub(w, pair[1], value, enc) end
+    if value then sub(writer, pair[1], value, encoding) end
   end
 
   if ref.deleted ~= nil then
-    header(w, 'DELE', 4)
-    Writer.u32(w, 0)
+    header(writer, 'DELE', 4)
+    Writer.u32(writer, 0)
   else
-    header(w, 'DATA', 24)
-    f32s(w, list(ref, 'translation', path), 3, `{path}.translation`)
-    f32s(w, list(ref, 'rotation', path), 3, `{path}.rotation`)
+    header(writer, 'DATA', 24)
+    f32s(writer, listOf(ref, 'translation', path), 3, `{path}.translation`)
+    f32s(writer, listOf(ref, 'rotation', path), 3, `{path}.rotation`)
   end
 end
 
-Encoders.Cell = function(w, r, enc, bits)
-  sub(w, 'NAME', str(r, 'name', 'value'), enc)
-  local d = tab(r, 'data', 'value')
-  header(w, 'DATA', 12)
-  Writer.u32(w, flags(Flags.CellFlags, d, 'flags', 'data'))
-  i32s(w, list(d, 'grid', 'data'), 2, 'data.grid')
-  local region = r.region :: string?
-  if region then sub(w, 'RGNN', region, enc) end
+Encoders.Cell = function(writer, record, encoding, bits)
+  sub(writer, 'NAME', stringOf(record, 'name', 'value'), encoding)
+  local data = tableOf(record, 'data', 'value')
+  header(writer, 'DATA', 12)
+  Writer.u32(writer, flags(Flags.CellFlags, data, 'flags', 'data'))
+  i32s(writer, listOf(data, 'grid', 'data'), 2, 'data.grid')
+  local region = record.region :: string?
+  if region then sub(writer, 'RGNN', region, encoding) end
 
-  local color = r.mapColor :: { unknown }?
+  local color = record.mapColor :: { unknown }?
   if color then
-    header(w, 'NAM5', 4)
-    u8s(w, color, 4, 'mapColor')
+    header(writer, 'NAM5', 4)
+    u8s(writer, color, 4, 'mapColor')
   end
 
-  local water = r.waterHeight :: number?
+  local water = record.waterHeight :: number?
   if water then
-    header(w, 'WHGT', 4)
-    Writer.f32(w, water)
+    header(writer, 'WHGT', 4)
+    Writer.f32(writer, water)
   end
 
-  local atmosphere = r.atmosphereData :: Value?
+  local atmosphere = record.atmosphereData :: Value?
   if atmosphere then
-    header(w, 'AMBI', 16)
-    u8s(w, list(atmosphere, 'ambientColor', 'atmosphereData'), 4, 'atmosphereData.ambientColor')
-    u8s(w, list(atmosphere, 'sunlightColor', 'atmosphereData'), 4, 'atmosphereData.sunlightColor')
-    u8s(w, list(atmosphere, 'fogColor', 'atmosphereData'), 4, 'atmosphereData.fogColor')
-    Writer.f32(w, num(atmosphere, 'fogDensity', 'atmosphereData'))
+    header(writer, 'AMBI', 16)
+    u8s(
+      writer,
+      listOf(atmosphere, 'ambientColor', 'atmosphereData'),
+      4,
+      'atmosphereData.ambientColor'
+    )
+    u8s(
+      writer,
+      listOf(atmosphere, 'sunlightColor', 'atmosphereData'),
+      4,
+      'atmosphereData.sunlightColor'
+    )
+    u8s(writer, listOf(atmosphere, 'fogColor', 'atmosphereData'), 4, 'atmosphereData.fogColor')
+    Writer.f32(writer, numberOf(atmosphere, 'fogDensity', 'atmosphereData'))
   end
 
-  dele(w, bits)
+  dele(writer, bits)
   -- Keyed by (master, index) as the Rust HashMap is: a later duplicate replaces an earlier one.
   local byKey: { [number]: Value } = {}
-  for i, item in list(r, 'references', 'value') do
+  for index, item in listOf(record, 'references', 'value') do
     local ref = item :: Value
-    local path = `references[{i}]`
-    byKey[num(ref, 'mastIndex', path) * 16777216 + num(ref, 'refrIndex', path)] = ref
+    local path = `references[{index}]`
+    byKey[numberOf(ref, 'mastIndex', path) * 16777216 + numberOf(ref, 'refrIndex', path)] = ref
   end
 
   local sorted: { Value } = {}
@@ -1203,145 +1223,147 @@ Encoders.Cell = function(w, r, enc, bits)
     table.insert(sorted, ref)
   end
 
-  table.sort(sorted, function(a, c)
-    local pa, pc = persistent(a), persistent(c)
-    if pa ~= pc then return pa end
+  table.sort(sorted, function(left, right)
+    local leftPersistent, rightPersistent = persistent(left), persistent(right)
+    if leftPersistent ~= rightPersistent then return leftPersistent end
 
-    local ma, mc = a.mastIndex :: number, c.mastIndex :: number
-    if ma == 0 then ma = 4294967296 end
+    local leftMaster, rightMaster = left.mastIndex :: number, right.mastIndex :: number
+    if leftMaster == 0 then leftMaster = 4294967296 end
 
-    if mc == 0 then mc = 4294967296 end
+    if rightMaster == 0 then rightMaster = 4294967296 end
 
-    if ma ~= mc then return ma < mc end
+    if leftMaster ~= rightMaster then return leftMaster < rightMaster end
 
-    return (a.refrIndex :: number) < (c.refrIndex :: number)
+    return (left.refrIndex :: number) < (right.refrIndex :: number)
   end)
 
   local temporary = 0
-  for i, ref in sorted do
-    local path = `references[{i}]`
-    local packed =
-      bit32.bor(num(ref, 'refrIndex', path), bit32.lshift(num(ref, 'mastIndex', path), 24))
+  for index, ref in sorted do
+    local path = `references[{index}]`
+    local packed = bit32.bor(
+      numberOf(ref, 'refrIndex', path),
+      bit32.lshift(numberOf(ref, 'mastIndex', path), 24)
+    )
     if temporary == 0 and not persistent(ref) then
-      temporary = #sorted - i + 1
-      header(w, 'NAM0', 4)
-      Writer.u32(w, temporary)
+      temporary = #sorted - index + 1
+      header(writer, 'NAM0', 4)
+      Writer.u32(writer, temporary)
     end
 
     local moved = ref.movedCell :: { unknown }?
     if moved then
-      header(w, 'MVRF', 4)
-      Writer.u32(w, packed)
-      header(w, 'CNDT', 8)
-      i32s(w, moved, 2, `{path}.movedCell`)
+      header(writer, 'MVRF', 4)
+      Writer.u32(writer, packed)
+      header(writer, 'CNDT', 8)
+      i32s(writer, moved, 2, `{path}.movedCell`)
     end
 
-    header(w, 'FRMR', 4)
-    Writer.u32(w, packed)
-    reference(w, ref, enc, path)
+    header(writer, 'FRMR', 4)
+    Writer.u32(writer, packed)
+    reference(writer, ref, encoding, path)
   end
 end
 
 --[[ LAND ]]
 
-local function landBlob(w: W, t: Value, path: string, size: number)
-  local data = Schema.unbase64(str(t, 'data', path), `{path}.data`)
+local function landBlob(writer: Writer, from: Value, path: string, size: number)
+  local data = Schema.unbase64(stringOf(from, 'data', path), `{path}.data`)
   if buffer.len(data) ~= size then
     fail(`{path}.data: expected {size} bytes, got {buffer.len(data)}`)
   end
 
-  Writer.copy(w, data, 0, size)
+  Writer.copy(writer, data, 0, size)
 end
 
-Encoders.Landscape = function(w, r, _enc, bits)
-  header(w, 'INTV', 8)
-  i32s(w, list(r, 'grid', 'value'), 2, 'grid')
-  local land = flags(Flags.LandscapeFlags, r, 'landscapeFlags', 'value')
-  header(w, 'DATA', 4)
-  Writer.u32(w, land)
+Encoders.Landscape = function(writer, record, _enc, bits)
+  header(writer, 'INTV', 8)
+  i32s(writer, listOf(record, 'grid', 'value'), 2, 'grid')
+  local land = flags(Flags.LandscapeFlags, record, 'landscapeFlags', 'value')
+  header(writer, 'DATA', 4)
+  Writer.u32(writer, land)
   if bit32.btest(land, 1) then
-    header(w, 'VNML', 12675)
-    landBlob(w, tab(r, 'vertexNormals', 'value'), 'vertexNormals', 12675)
-    local heights = tab(r, 'vertexHeights', 'value')
-    header(w, 'VHGT', 4232)
-    Writer.f32(w, num(heights, 'offset', 'vertexHeights'))
-    landBlob(w, heights, 'vertexHeights', 4225)
-    Writer.zeros(w, 3)
+    header(writer, 'VNML', 12675)
+    landBlob(writer, tableOf(record, 'vertexNormals', 'value'), 'vertexNormals', 12675)
+    local heights = tableOf(record, 'vertexHeights', 'value')
+    header(writer, 'VHGT', 4232)
+    Writer.f32(writer, numberOf(heights, 'offset', 'vertexHeights'))
+    landBlob(writer, heights, 'vertexHeights', 4225)
+    Writer.zeros(writer, 3)
   end
 
   if bit32.btest(land, 7) then
-    header(w, 'WNAM', 81)
-    landBlob(w, tab(r, 'worldMapData', 'value'), 'worldMapData', 81)
+    header(writer, 'WNAM', 81)
+    landBlob(writer, tableOf(record, 'worldMapData', 'value'), 'worldMapData', 81)
   end
 
   if bit32.btest(land, 2) then
-    header(w, 'VCLR', 12675)
-    landBlob(w, tab(r, 'vertexColors', 'value'), 'vertexColors', 12675)
+    header(writer, 'VCLR', 12675)
+    landBlob(writer, tableOf(record, 'vertexColors', 'value'), 'vertexColors', 12675)
   end
 
   if bit32.btest(land, 4) then
-    header(w, 'VTEX', 512)
-    landBlob(w, tab(r, 'textureIndices', 'value'), 'textureIndices', 512)
+    header(writer, 'VTEX', 512)
+    landBlob(writer, tableOf(record, 'textureIndices', 'value'), 'textureIndices', 512)
   end
 
-  dele(w, bits)
+  dele(writer, bits)
 end
 
 --[[ PGRD ]]
 
-Encoders.PathGrid = function(w, r, enc, bits)
-  local d = tab(r, 'data', 'value')
-  header(w, 'DATA', 12)
-  i32s(w, list(d, 'grid', 'data'), 2, 'data.grid')
-  Writer.u16(w, num(d, 'granularity', 'data'))
-  Writer.u16(w, num(d, 'pointCount', 'data'))
-  sub(w, 'NAME', str(r, 'cell', 'value'), enc)
-  local points = list(r, 'points', 'value')
+Encoders.PathGrid = function(writer, record, encoding, bits)
+  local data = tableOf(record, 'data', 'value')
+  header(writer, 'DATA', 12)
+  i32s(writer, listOf(data, 'grid', 'data'), 2, 'data.grid')
+  Writer.u16(writer, numberOf(data, 'granularity', 'data'))
+  Writer.u16(writer, numberOf(data, 'pointCount', 'data'))
+  sub(writer, 'NAME', stringOf(record, 'cell', 'value'), encoding)
+  local points = listOf(record, 'points', 'value')
   if #points > 0 then
-    header(w, 'PGRP', #points * 16)
-    for i, item in points do
+    header(writer, 'PGRP', #points * 16)
+    for index, item in points do
       local point = item :: Value
-      local path = `points[{i}]`
-      i32s(w, list(point, 'location', path), 3, `{path}.location`)
-      Writer.u8(w, num(point, 'autoGenerated', path))
-      Writer.u8(w, num(point, 'connectionCount', path))
-      Writer.zeros(w, 2)
+      local path = `points[{index}]`
+      i32s(writer, listOf(point, 'location', path), 3, `{path}.location`)
+      Writer.u8(writer, numberOf(point, 'autoGenerated', path))
+      Writer.u8(writer, numberOf(point, 'connectionCount', path))
+      Writer.zeros(writer, 2)
     end
   end
 
-  local connections = Schema.unbase64(str(r, 'connections', 'value'), 'connections')
+  local connections = Schema.unbase64(stringOf(record, 'connections', 'value'), 'connections')
   local count = if buffer.len(connections) >= 4 then buffer.readu32(connections, 0) else 0
   if count > 0 then
-    header(w, 'PGRC', count * 4)
-    Writer.copy(w, connections, 4, count * 4)
+    header(writer, 'PGRC', count * 4)
+    Writer.copy(writer, connections, 4, count * 4)
   end
 
-  dele(w, bits)
+  dele(writer, bits)
 end
 
 --[[ DIAL and INFO ]]
 
-Encoders.Dialogue = function(w, r, enc, bits)
-  sub(w, 'NAME', str(r, 'id', 'value'), enc)
-  header(w, 'DATA', 1)
-  Writer.u8(w, enum(Enums.DialogueType, r, 'dialogueType', 'value'))
-  dele(w, bits)
+Encoders.Dialogue = function(writer, record, encoding, bits)
+  sub(writer, 'NAME', stringOf(record, 'id', 'value'), encoding)
+  header(writer, 'DATA', 1)
+  Writer.u8(writer, enum(Enums.DialogueType, record, 'dialogueType', 'value'))
+  dele(writer, bits)
 end
 
 local QuestTags = { Name = 'QSTN', Finished = 'QSTF', Restart = 'QSTR' }
 
-Encoders.DialogueInfo = function(w, r, enc, bits)
-  sub(w, 'INAM', str(r, 'id', 'value'), enc)
-  sub(w, 'PNAM', str(r, 'prevId', 'value'), enc)
-  sub(w, 'NNAM', str(r, 'nextId', 'value'), enc)
-  local d = tab(r, 'data', 'value')
-  header(w, 'DATA', 12)
-  Writer.u32(w, enum(Enums.DialogueType, d, 'dialogueType', 'data'))
-  Writer.i32(w, num(d, 'disposition', 'data'))
-  Writer.u8(w, num(d, 'speakerRank', 'data') % 256)
-  Writer.u8(w, enum(Enums.Sex, d, 'speakerSex', 'data') % 256)
-  Writer.u8(w, num(d, 'playerRank', 'data') % 256)
-  Writer.zeros(w, 1)
+Encoders.DialogueInfo = function(writer, record, encoding, bits)
+  sub(writer, 'INAM', stringOf(record, 'id', 'value'), encoding)
+  sub(writer, 'PNAM', stringOf(record, 'prevId', 'value'), encoding)
+  sub(writer, 'NNAM', stringOf(record, 'nextId', 'value'), encoding)
+  local data = tableOf(record, 'data', 'value')
+  header(writer, 'DATA', 12)
+  Writer.u32(writer, enum(Enums.DialogueType, data, 'dialogueType', 'data'))
+  Writer.i32(writer, numberOf(data, 'disposition', 'data'))
+  Writer.u8(writer, numberOf(data, 'speakerRank', 'data') % 256)
+  Writer.u8(writer, enum(Enums.Sex, data, 'speakerSex', 'data') % 256)
+  Writer.u8(writer, numberOf(data, 'playerRank', 'data') % 256)
+  Writer.zeros(writer, 1)
   for _, pair in
     {
       { 'ONAM', 'speakerId' },
@@ -1354,47 +1376,47 @@ Encoders.DialogueInfo = function(w, r, enc, bits)
     }
 
   do
-    opt(w, pair[1], str(r, pair[2], 'value'), enc)
+    opt(writer, pair[1], stringOf(record, pair[2], 'value'), encoding)
   end
 
-  local text = str(r, 'text', 'value')
+  local text = stringOf(record, 'text', 'value')
   if text ~= '' then
-    tag(w, 'NAME')
-    wExact(w, text, enc)
+    tag(writer, 'NAME')
+    writeExact(writer, text, encoding)
   end
 
-  local state = r.questState :: string?
+  local state = record.questState :: string?
   if state then
     local name = QuestTags[state]
     if not name then
       fail(`value.questState: unknown variant '{state}', expected one of Finished, Name, Restart`)
     end
 
-    header(w, name, 1)
-    Writer.u8(w, 1)
+    header(writer, name, 1)
+    Writer.u8(writer, 1)
   end
 
-  for i, item in list(r, 'filters', 'value') do
+  for position, item in listOf(record, 'filters', 'value') do
     local filter = item :: Value
-    local path = `filters[{i}]`
-    local index = num(filter, 'index', path)
+    local path = `filters[{position}]`
+    local index = numberOf(filter, 'index', path)
     if index + 48 > 255 then fail 'DialogueInfo: Invalid filter index' end
 
-    local id = encodeText(str(filter, 'id', path), enc)
-    tag(w, 'SCVR')
-    Writer.u32(w, #id + 5)
-    Writer.u8(w, index + 48)
-    Writer.u8(w, enum(Enums.FilterType, filter, 'filterType', path))
-    Writer.u16(w, enum(Enums.FilterFunction, filter, 'function', path))
-    Writer.u8(w, enum(Enums.FilterComparison, filter, 'comparison', path))
-    Writer.string(w, id)
-    local value = tab(filter, 'value', path)
+    local id = encodeText(stringOf(filter, 'id', path), encoding)
+    tag(writer, 'SCVR')
+    Writer.u32(writer, #id + 5)
+    Writer.u8(writer, index + 48)
+    Writer.u8(writer, enum(Enums.FilterType, filter, 'filterType', path))
+    Writer.u16(writer, enum(Enums.FilterFunction, filter, 'function', path))
+    Writer.u8(writer, enum(Enums.FilterComparison, filter, 'comparison', path))
+    Writer.string(writer, id)
+    local value = tableOf(filter, 'value', path)
     if value.type == 'Integer' then
-      header(w, 'INTV', 4)
-      Writer.i32(w, num(value, 'data', path))
+      header(writer, 'INTV', 4)
+      Writer.i32(writer, numberOf(value, 'data', path))
     elseif value.type == 'Float' then
-      header(w, 'FLTV', 4)
-      Writer.f32(w, num(value, 'data', path))
+      header(writer, 'FLTV', 4)
+      Writer.f32(writer, numberOf(value, 'data', path))
     else
       fail(
         `{path}.value.type: unknown variant '{tostring(value.type)}', expected one of Float, Integer`
@@ -1402,64 +1424,68 @@ Encoders.DialogueInfo = function(w, r, enc, bits)
     end
   end
 
-  local script = str(r, 'scriptText', 'value')
+  local script = stringOf(record, 'scriptText', 'value')
   if script ~= '' then
-    tag(w, 'BNAM')
-    wExact(w, script, enc)
+    tag(writer, 'BNAM')
+    writeExact(writer, script, encoding)
   end
 
-  dele(w, bits)
+  dele(writer, bits)
 end
 
 --[[ LUAL ]]
 
 --- A LUAD blob: the bytes after its length, given the base64 of both.
-local function luaData(w: W, text: string, path: string)
+local function luaData(writer: Writer, text: string, path: string)
   local data = Schema.unbase64(text, path)
   local length = if buffer.len(data) >= 4 then buffer.readu32(data, 0) else 0
   if length == 0 then return end
 
-  tag(w, 'LUAD')
-  Writer.u32(w, length)
-  Writer.copy(w, data, 4, length)
+  tag(writer, 'LUAD')
+  Writer.u32(writer, length)
+  Writer.copy(writer, data, 4, length)
 end
 
-Encoders.ScriptConfigList = function(w, r, enc)
-  for i, item in list(r, 'scripts', 'value') do
+Encoders.ScriptConfigList = function(writer, record, encoding)
+  for index, item in listOf(record, 'scripts', 'value') do
     local config = item :: Value
-    local path = `scripts[{i}]`
-    local scriptPath = encodeText(str(config, 'path', path), enc)
-    tag(w, 'LUAS')
-    Writer.u32(w, #scriptPath)
-    Writer.string(w, scriptPath)
-    local types = list(config, 'types', path)
-    tag(w, 'LUAF')
-    Writer.u32(w, 4 + 4 * #types)
-    Writer.u32(w, flags(Flags.OMWScriptAttachFlag, config, 'flags', path))
+    local path = `scripts[{index}]`
+    local scriptPath = encodeText(stringOf(config, 'path', path), encoding)
+    tag(writer, 'LUAS')
+    Writer.u32(writer, #scriptPath)
+    Writer.string(writer, scriptPath)
+    local types = listOf(config, 'types', path)
+    tag(writer, 'LUAF')
+    Writer.u32(writer, 4 + 4 * #types)
+    Writer.u32(writer, flags(Flags.OMWScriptAttachFlag, config, 'flags', path))
     for _, kind in types do
-      Writer.string(w, kind :: string)
+      Writer.string(writer, kind :: string)
     end
 
-    luaData(w, str(config, 'initData', path), `{path}.initData`)
-    for k, entry in list(config, 'records', path) do
-      local record = entry :: Value
-      local id = str(record, 'id', `{path}.records[{k}]`)
-      tag(w, 'LUAR')
-      Writer.u32(w, #id + 1)
-      Writer.u8(w, if record.attach then 1 else 0)
-      Writer.string(w, id)
-      luaData(w, str(record, 'data', `{path}.records[{k}]`), `{path}.records[{k}].data`)
+    luaData(writer, stringOf(config, 'initData', path), `{path}.initData`)
+    for recordIndex, entry in listOf(config, 'records', path) do
+      local scriptRecord = entry :: Value
+      local id = stringOf(scriptRecord, 'id', `{path}.records[{recordIndex}]`)
+      tag(writer, 'LUAR')
+      Writer.u32(writer, #id + 1)
+      Writer.u8(writer, if scriptRecord.attach then 1 else 0)
+      Writer.string(writer, id)
+      luaData(
+        writer,
+        stringOf(scriptRecord, 'data', `{path}.records[{recordIndex}]`),
+        `{path}.records[{recordIndex}].data`
+      )
     end
 
-    for k, entry in list(config, 'instances', path) do
+    for instanceIndex, entry in listOf(config, 'instances', path) do
       local instance = entry :: Value
-      local at = `{path}.instances[{k}]`
-      tag(w, 'LUAI')
-      Writer.u32(w, 9)
-      Writer.u8(w, if instance.attach then 1 else 0)
-      Writer.u32(w, num(instance, 'refIdx', at))
-      Writer.i32(w, num(instance, 'mastIdx', at))
-      luaData(w, str(instance, 'data', at), `{at}.data`)
+      local at = `{path}.instances[{instanceIndex}]`
+      tag(writer, 'LUAI')
+      Writer.u32(writer, 9)
+      Writer.u8(writer, if instance.attach then 1 else 0)
+      Writer.u32(writer, numberOf(instance, 'refIdx', at))
+      Writer.i32(writer, numberOf(instance, 'mastIdx', at))
+      luaData(writer, stringOf(instance, 'data', at), `{at}.data`)
     end
   end
 end
@@ -1471,9 +1497,9 @@ for _, entry in Decode.specs do
   TagsByName[entry.name] = entry.tag
 end
 
---- A record value's bytes, header included, text in `enc`. `value.type` names its record type.
-local function encode(value: Value, enc: string?): buffer
-  local encoding = enc or 'win1252'
+--- A record value's bytes, header included, text in `encoding`. `value.type` names its record type.
+local function encode(value: Value, encoding: string?): buffer
+  local codePage = encoding or 'win1252'
   local name = value.type
   if type(name) ~= 'string' then
     return fail(`value.type: expected a record type name, got {type(name)}`)
@@ -1485,13 +1511,13 @@ local function encode(value: Value, enc: string?): buffer
 
   local record = merge(Decode.default(name), value) :: Value
   local bits = Schema.flagBits(Flags.ObjectFlags, record.flags, 'value.flags')
-  local w = Writer.new(256)
-  tag(w, recordTag)
-  Writer.u32(w, 0)
-  Writer.u32(w, 0)
-  Writer.u32(w, bits)
-  encoder(w, record, encoding, bits)
-  local out = Writer.finish(w)
+  local writer = Writer.new(256)
+  tag(writer, recordTag)
+  Writer.u32(writer, 0)
+  Writer.u32(writer, 0)
+  Writer.u32(writer, bits)
+  encoder(writer, record, codePage, bits)
+  local out = Writer.finish(writer)
   buffer.writeu32(out, 4, buffer.len(out) - 16)
   return out
 end
