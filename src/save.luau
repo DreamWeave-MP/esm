@@ -198,12 +198,15 @@ end
 
 export type LuaRef = { index: number, contentFile: number }
 
---- A Lua value: `kind` says which fields it has. `value` holds a number's, a boolean's, or a
---- string's value; `entries` a table's; `ref` an object's and `refs` an object list's; `typeName` and
---- `data` other userdata's; `values` a vector's, transform's, or color's components.
+--- A Lua value: `kind` says which fields it has. `value` holds a number's, an integer's, a
+--- boolean's, or a string's value; `entries` a table's; `ref` an object's and `refs` an object
+--- list's; `typeName` and `data` other userdata's; `values` a vector's, transform's, or color's
+--- components. An `integer` is the signed 64-bit kind format version 1 added, held exactly.
+--- `version` is on the value a whole payload decoded to: the format version it was written in.
 export type LuaValue = {
   kind: string,
-  value: (number | boolean | string)?,
+  version: number?,
+  value: (number | boolean | string | integer)?,
   entries: { { key: LuaValue, value: LuaValue } }?,
   ref: LuaRef?,
   refs: { LuaRef }?,
@@ -212,12 +215,16 @@ export type LuaValue = {
   values: { number }?,
 }
 
-local FormatVersion = 0
+--- The newest Lua serialization format read and written: `FORMAT_VERSION` in OpenMW's
+--- `components/lua/serialization.cpp`. Version 1 is version 0 with one more tag, the integer
+--- (0x5, a signed 64-bit value); OpenMW reads both and refuses an integer in a version 0 payload.
+local LuaFormatVersion = 1
+local IntegerTag = 0x5
 local ShortStringFlag = 0x20
 local CustomFullFlag = 0x40
 local CustomCompactFlag = 0x80
 
-type Cursor = { source: buffer, position: number, finish: number, base: number }
+type Cursor = { source: buffer, position: number, finish: number, base: number, version: number }
 
 local function need(cursor: Cursor, length: number): number
   local at = cursor.position
@@ -339,6 +346,17 @@ decodeValue = function(cursor: Cursor): LuaValue
 
   if tag == 0x4 then fail(cursor.position - 1 - cursor.base, 'unexpected Lua table end marker') end
 
+  if tag == IntegerTag then
+    if cursor.version == 0 then
+      fail(
+        cursor.position - 1 - cursor.base,
+        'an integer is not valid in Lua serialization format version 0'
+      )
+    end
+
+    return { kind = 'integer', value = buffer.readinteger(cursor.source, need(cursor, 8)) }
+  end
+
   if tag == 0x10 then return { kind = 'vec2', values = f64s(cursor, 2) } end
 
   if tag == 0x11 then return { kind = 'vec3', values = f64s(cursor, 3) } end
@@ -361,23 +379,26 @@ decodeValue = function(cursor: Cursor): LuaValue
   return fail(cursor.position - 1 - cursor.base, `unknown Lua serialization tag {tag}`)
 end
 
---- A LUAD payload (`length` bytes of `source` at `offset`) decoded; an empty one is Lua nil, as
---- `LuaUtil::deserialize` takes it. Error offsets are relative to the payload.
+--- A LUAD payload (`length` bytes of `source` at `offset`) decoded, with the format version it
+--- was written in as its `version`; an empty one is Lua nil, as `LuaUtil::deserialize` takes it,
+--- and has no version. Error offsets are relative to the payload.
 local function decodeLuaData(source: buffer, offset: number, length: number): LuaValue
   if length == 0 then return { kind = 'nil' } end
 
   local cursor: Cursor =
-    { source = source, position = offset, finish = offset + length, base = offset }
+    { source = source, position = offset, finish = offset + length, base = offset, version = 0 }
   local version = buffer.readu8(source, need(cursor, 1))
-  if version ~= FormatVersion then
+  if version > LuaFormatVersion then
     fail(0, `unsupported Lua serialization format version {version}`)
   end
 
+  cursor.version = version
   local value = decodeValue(cursor)
   if cursor.position ~= cursor.finish then
     fail(cursor.position - offset, 'unexpected data after serialized Lua object')
   end
 
+  value.version = version
   return value
 end
 
@@ -390,6 +411,11 @@ local function encodeValue(value: LuaValue, out: { string })
     error('serialized Lua nil can only be represented as an empty LUAD payload', 0)
   elseif kind == 'number' then
     table.insert(out, string.pack('<Bd', 0, value.value :: number))
+  elseif kind == 'integer' then
+    local bytes = buffer.create(9)
+    buffer.writeu8(bytes, 0, IntegerTag)
+    buffer.writeinteger(bytes, 1, value.value :: integer)
+    table.insert(out, buffer.tostring(bytes))
   elseif kind == 'boolean' then
     table.insert(out, string.pack('<BB', 2, if value.value then 1 else 0))
   elseif kind == 'string' then
@@ -444,11 +470,34 @@ local function encodeValue(value: LuaValue, out: { string })
   end
 end
 
+--- Whether a value holds an integer anywhere in it.
+local function hasInteger(value: LuaValue): boolean
+  if value.kind == 'integer' then return true end
+
+  for _, entry in value.entries or {} do
+    if hasInteger(entry.key) or hasInteger(entry.value) then return true end
+  end
+
+  return false
+end
+
 --- A value as a LUAD payload: nil as an empty one, anything else after the format byte.
-local function encodeLuaData(value: LuaValue): string
+--- It is written in `version`, else in the value's own (a payload decoded and written back
+--- keeps the format it came in), else in the oldest that holds it: 0 unless an integer is in it.
+local function encodeLuaData(value: LuaValue, version: number?): string
   if value.kind == 'nil' then return '' end
 
-  local out = { string.char(FormatVersion) }
+  local integers = hasInteger(value)
+  local written = version or value.version or (if integers then 1 else 0)
+  if written > LuaFormatVersion or written < 0 then
+    error(`unsupported Lua serialization format version {written}`, 0)
+  end
+
+  if integers and written == 0 then
+    error('an integer is not valid in Lua serialization format version 0', 0)
+  end
+
+  local out = { string.char(written) }
   encodeValue(value, out)
   return table.concat(out)
 end
@@ -626,6 +675,7 @@ return table.freeze {
   MinEngineSupportedFormatVersion = MinEngineSupportedFormatVersion,
   MinMetadataFormatVersion = MinMetadataFormatVersion,
   MinMutationFormatVersion = MinMutationFormatVersion,
+  LuaFormatVersion = LuaFormatVersion,
   compatibility = compatibility,
   decodeLuaData = decodeLuaData,
   decodeRefId = decodeRefId,

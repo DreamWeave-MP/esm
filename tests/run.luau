@@ -610,7 +610,7 @@ suite.describe('OpenMW saves', function()
       .. 'o'
       .. string.pack('<I4i4', 42, 1)
     local value = save.decodeLuaData(buffer.fromstring(payload), 0, #payload)
-    expect(value).toEqual { kind = 'object', ref = { index = 42, contentFile = 1 } }
+    expect(value).toEqual { kind = 'object', ref = { index = 42, contentFile = 1 }, version = 0 }
     expect(save.luaRefs(value)).toEqual { { index = 42, contentFile = 1 } }
     local list = '\0'
       .. string.char(0x46)
@@ -628,6 +628,7 @@ suite.describe('OpenMW saves', function()
     local value = save.decodeLuaData(buffer.fromstring(payload), 0, #payload)
     expect(value).toEqual {
       kind = 'table',
+      version = 0,
       entries = {
         {
           key = { kind = 'string', value = 'x' },
@@ -638,8 +639,67 @@ suite.describe('OpenMW saves', function()
     expect(save.encodeLuaData(value)).toBe(payload)
     expect(save.decodeLuaData(buffer.create(0), 0, 0)).toEqual { kind = 'nil' }
     expect(save.encodeLuaData { kind = 'nil' }).toBe ''
-    expect(function() save.decodeLuaData(buffer.fromstring '\1', 0, 1) end).toThrow 'unsupported Lua serialization format version 1'
+    expect(function() save.decodeLuaData(buffer.fromstring '\2', 0, 1) end).toThrow 'unsupported Lua serialization format version 2'
     expect(function() save.decodeLuaData(buffer.fromstring '\0\0\0', 0, 3) end).toThrow 'unexpected end of serialized Lua data at offset 2'
+  end)
+
+  suite.it('reads and writes format version 1, which adds the integer', function()
+    expect(save.LuaFormatVersion).toBe(1)
+
+    -- { count = 7i, [2i] = -1i, big = 2^63 - 1 }, as OpenMW's version 1 writes it.
+    local payload = '\1\3'
+      .. '\37count\5'
+      .. string.pack('<i8', 7)
+      .. '\5'
+      .. string.pack('<i8', 2)
+      .. '\5'
+      .. string.pack('<i8', -1)
+      .. '\35big\5\255\255\255\255\255\255\255\127'
+      .. '\4'
+    local value = save.decodeLuaData(buffer.fromstring(payload), 0, #payload)
+    local entries = value.entries or {}
+    expect({ value.kind, value.version, #entries }).toEqual { 'table', 1, 3 }
+    expect({ entries[1].value.kind, entries[1].value.value }).toEqual { 'integer', 7i }
+    expect({ entries[2].key.value, entries[2].value.value }).toEqual { 2i, -1i }
+    expect(entries[3].value.value).toBe(integer.fromstring '9223372036854775807')
+
+    -- Written back in the format it came in, byte for byte.
+    expect(save.encodeLuaData(value)).toBe(payload)
+
+    -- Shown as whole numbers: a number while one holds it exactly, the integer itself past that.
+    expect(tes3.display.luaValue(value, true)).toEqual {
+      count = 7,
+      ['2'] = -1,
+      big = integer.fromstring '9223372036854775807',
+    }
+  end)
+
+  suite.it('keeps a version 1 payload at version 1, and a version 0 one at version 0', function()
+    -- The same table, { 'a' }, written by each format: nothing in it needs version 1.
+    local body = '\3\0' .. string.pack('<d', 1) .. '\33a\4'
+    for version = 0, 1 do
+      local payload = string.char(version) .. body
+      local value = save.decodeLuaData(buffer.fromstring(payload), 0, #payload)
+      expect(value.version).toBe(version)
+      expect(save.encodeLuaData(value)).toBe(payload)
+      expect(tes3.display.luaValue(value, true)).toEqual { 'a' }
+    end
+  end)
+
+  suite.it('writes a value of its own in the oldest format that holds it', function()
+    local plain: tes3.LuaValue = { kind = 'number', value = 1.5 }
+    local whole: tes3.LuaValue = { kind = 'integer', value = 3i }
+    expect(string.byte(save.encodeLuaData(plain), 1)).toBe(0)
+    expect(string.byte(save.encodeLuaData(whole), 1)).toBe(1)
+    expect(string.byte(save.encodeLuaData(plain, 1), 1)).toBe(1)
+    expect(function() save.encodeLuaData(whole, 0) end).toThrow 'an integer is not valid in Lua serialization format version 0'
+    expect(function() save.encodeLuaData(plain, 2) end).toThrow 'unsupported Lua serialization format version 2'
+  end)
+
+  suite.it('refuses an integer in a version 0 payload, as OpenMW does', function()
+    local payload = '\0\5' .. string.pack('<i8', 7)
+    expect(function() save.decodeLuaData(buffer.fromstring(payload), 0, #payload) end).toThrow 'an integer is not valid in Lua serialization format version 0 at offset 1'
+    expect(function() save.decodeLuaData(buffer.fromstring '\1\5\1\2', 0, 4) end).toThrow 'unexpected end of serialized Lua data'
   end)
 end)
 

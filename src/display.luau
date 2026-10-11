@@ -196,6 +196,24 @@ local function numberKey(value: number): string
   return tostring(value)
 end
 
+--- A Lua integer as a number where a number holds it exactly, and as itself past that: either
+--- way it is written out as a whole number.
+local function luaInteger(value: integer): number | integer
+  local number = integer.tonumber(value)
+  if math.abs(number) <= 2 ^ 53 then return number end
+
+  return value
+end
+
+--- The place in a list a table key names: a number or an integer that is a whole number.
+local function listIndex(key: LuaValue): number?
+  if key.kind == 'number' then return key.value :: number end
+
+  if key.kind == 'integer' then return integer.tonumber(key.value :: integer) end
+
+  return nil
+end
+
 local function lossy(text: string): string return Plugin.lossyUtf8(text) end
 
 local luaValue: (value: LuaValue, keepKeys: boolean?) -> unknown
@@ -224,6 +242,8 @@ luaValue = function(value: LuaValue, keepKeys: boolean?): unknown
 
   if kind == 'number' then return luaNumber(value.value :: number) end
 
+  if kind == 'integer' then return luaInteger(value.value :: integer) end
+
   if kind == 'boolean' then return value.value end
 
   if kind == 'string' then return lossy(value.value :: string) end
@@ -232,7 +252,7 @@ luaValue = function(value: LuaValue, keepKeys: boolean?): unknown
     local entries = value.entries or {}
     local list = #entries > 0
     for position, entry in entries do
-      if entry.key.kind ~= 'number' or entry.key.value ~= position then
+      if listIndex(entry.key) ~= position then
         list = false
         break
       end
@@ -253,6 +273,7 @@ luaValue = function(value: LuaValue, keepKeys: boolean?): unknown
       local text = if key.kind == 'string'
         then lossy(key.value :: string)
         elseif key.kind == 'number' then numberKey(key.value :: number)
+        elseif key.kind == 'integer' then tostring(key.value)
         elseif key.kind == 'boolean' then tostring(key.value)
         else key.kind
       out[if keepKeys then text else Text.camelCase(text)] = luaValue(entry.value, keepKeys)
