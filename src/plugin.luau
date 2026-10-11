@@ -1632,7 +1632,9 @@ function Plugin.validateProfile(self: Plugin, profile: Profile): { Diagnostic }
       message = `the first record is {Tags.display(self:code(0))}, not the TES3 header`,
     })
   else
-    for _, check in { Plugin.header, Plugin.masters } :: { (Plugin) -> any } do
+    for _, check in { Plugin.header, Plugin.masters } :: { (Plugin) -> unknown } do
+      -- header and masters raise on a TES3 record they can't read (a truncated HEDR, a MAST with
+      -- no DATA after it); each is a diagnostic here, and the other checks still run.
       local ok, problem = pcall(check, self)
       if ok then continue end
 
@@ -1799,6 +1801,7 @@ local function checkRoundTrip(bytes: buffer, excluded: { string }?, ignoreCruft:
     end
   end
 
+  -- parse raises on bytes that don't frame as records; the check answers with that, not an error.
   local ok, plugin = pcall(parse, source, nil)
   if not ok then return `failed to parse plugin: {plugin}` end
 
@@ -1823,6 +1826,7 @@ local function checkRoundTrip(bytes: buffer, excluded: { string }?, ignoreCruft:
     return table.concat(parts)
   end
 
+  -- parse raises just the same on saved bytes that no longer frame, and that's the answer too.
   local reopened, again = pcall(parse, saved, nil)
   if not reopened then return `failed to parse plugin: {again}` end
 

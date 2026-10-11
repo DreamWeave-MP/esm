@@ -122,6 +122,7 @@ local function unencodable(text: string, encoding: string): string?
     if codepoint < 0x80 then continue end
 
     local character = utf8.char(codepoint)
+    -- bytes.encode throws on a character the code page lacks, which is what's being asked of it.
     if not pcall(bytes.encode, character, code) then return character end
   end
 

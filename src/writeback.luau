@@ -333,6 +333,8 @@ end
 
 local function decodes(bytes: string, encoding: string): Value?
   local source = buffer.fromstring(bytes)
+  -- Decode.decode raises on bytes that aren't a well-formed record, which merged subrecords may not
+  -- be; nil has `minimal` write the whole new encoding instead.
   local ok, value = pcall(Decode.decode, source, 0, buffer.len(source), encoding)
   return if ok then value else nil
 end
