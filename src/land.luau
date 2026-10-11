@@ -1,0 +1,320 @@
+--!strict
+--!native
+-- SPDX-License-Identifier: MIT OR Apache-2.0
+
+--[[
+LAND terrain as buffers (jess's `jess.land`). A decoded LAND spells each of its arrays as base64
+text, which is fine for a field or two and ruinous for a load order's worth of terrain: `read`
+copies the subrecords straight out of the record's bytes instead, VHGT's deltas summed into heights
+on the way, and `write` takes the same shapes back, with `false` for a part to leave its subrecord
+out.
+
+Buffers are little-endian and row-major: 65×65 vertices from the cell's south-west corner.
+]]
+
+local Decode = require './decode'
+local Plugin = require './plugin'
+local Schema = require './schema'
+local Tags = require './tags'
+
+type Plugin = Plugin.Plugin
+type Value = Decode.Value
+
+export type Part = 'heights' | 'normals' | 'colors' | 'textures' | 'worldMap'
+
+--- A LAND record's terrain, each subrecord in a buffer: nil for one the record doesn't have (or
+--- `read` wasn't asked for).
+export type Terrain = {
+  --- INTV: the cell's `{ x, y }`.
+  grid: { number }?,
+  --- DATA, as a number: 1 heights and normals, 2 colors, 4 textures.
+  flags: number?,
+  --- VHGT's offset: vertex `i` stands at `(heightOffset + heights[i]) * 8` game units.
+  heightOffset: number?,
+  --- VHGT's deltas summed down the first column and along each row: an i32 per vertex.
+  heights: buffer?,
+  --- VNML: an i8 x, y, and z per vertex.
+  normals: buffer?,
+  --- VCLR: a u8 red, green, and blue per vertex.
+  colors: buffer?,
+  --- VTEX: 16×16 u16s in the order the file keeps them, 0 for none and otherwise one more than
+  --- the plugin's LTEX index.
+  textures: buffer?,
+  --- WNAM: 9×9 i8s, the world map's heights.
+  worldMap: buffer?,
+}
+
+--- What `write` takes: `Terrain`'s fields, where `false` for a part leaves its subrecord out even
+--- though the flags would write it. The fields are only read, so a `Terrain` from `read` fits.
+export type Parts = {
+  read grid: { number }?,
+  read flags: number?,
+  read heightOffset: number?,
+  read heights: (buffer | false)?,
+  read normals: (buffer | false)?,
+  read colors: (buffer | false)?,
+  read textures: (buffer | false)?,
+  read worldMap: (buffer | false)?,
+}
+
+local Side = 65
+local Vertices = Side * Side
+-- VHGT: the offset, a delta per vertex, and three bytes of padding.
+local HeightsLength = 4 + Vertices + 3
+
+local LandTag = Tags.code 'LAND'
+
+local PartNames: { Part } = { 'heights', 'normals', 'colors', 'textures', 'worldMap' }
+
+local PartTags: { [string]: string } = {
+  heights = 'VHGT',
+  normals = 'VNML',
+  colors = 'VCLR',
+  textures = 'VTEX',
+  worldMap = 'WNAM',
+}
+
+--- How long the buffer of each part is.
+local PartLengths: { [string]: number } = {
+  heights = Vertices * 4,
+  normals = Vertices * 3,
+  colors = Vertices * 3,
+  textures = 16 * 16 * 2,
+  worldMap = 9 * 9,
+}
+
+--- The field of a decoded LAND each part other than the heights is.
+local PartFields: { [string]: string } = {
+  normals = 'vertexNormals',
+  colors = 'vertexColors',
+  textures = 'textureIndices',
+  worldMap = 'worldMapData',
+}
+
+local WriteOptions: { [string]: boolean } = {
+  colors = true,
+  flags = true,
+  grid = true,
+  heightOffset = true,
+  heights = true,
+  normals = true,
+  textures = true,
+  worldMap = true,
+}
+
+local function fail(message: string): never error(message, 0) end
+
+--- Which parts a `read` asked for: every one without a list.
+local function wanted(parts: { Part }?): { [string]: boolean }
+  local out: { [string]: boolean } = {}
+  if not parts then
+    for _, name in PartNames do
+      out[name] = true
+    end
+
+    return out
+  end
+
+  for _, name in parts :: { string } do
+    if not PartTags[name] then
+      fail(
+        `unknown LAND part '{name}'; expected heights, normals, colors, textures, or worldMap`
+      )
+    end
+
+    out[name] = true
+  end
+
+  return out
+end
+
+--- VHGT's deltas, at `at` in `source`, summed into a step per vertex: down the first column, and
+--- from there along each row.
+local function steps(source: buffer, at: number): buffer
+  local out = buffer.create(Vertices * 4)
+  local rowStart = 0
+  for row = 0, Side - 1 do
+    local first = row * Side
+    rowStart += buffer.readi8(source, at + first)
+
+    local height = rowStart
+    buffer.writei32(out, first * 4, height)
+    for column = 1, Side - 1 do
+      height += buffer.readi8(source, at + first + column)
+      buffer.writei32(out, (first + column) * 4, height)
+    end
+  end
+
+  return out
+end
+
+--- The deltas VHGT keeps for `heights`, the inverse of `steps`: each a vertex's step less the one
+--- before it in its row, or the one below it down the first column. A LAND has one signed byte
+--- for a delta, so a steeper step is an error.
+local function deltas(heights: buffer): buffer
+  local out = buffer.create(Vertices)
+  local below = 0
+  for row = 0, Side - 1 do
+    local first = row * Side
+    local before = below
+    below = buffer.readi32(heights, first * 4)
+
+    for column = 0, Side - 1 do
+      local step = buffer.readi32(heights, (first + column) * 4)
+      local delta = step - before
+      if delta < -128 or delta > 127 then
+        fail(
+          `LAND heights step too far at vertex ({column}, {row}): a delta must fit in an i8`
+        )
+      end
+
+      buffer.writei8(out, first + column, delta)
+      before = step
+    end
+  end
+
+  return out
+end
+
+--- A LAND record's terrain: its grid and flags, and the `parts` asked for (every one by default).
+local function read(plugin: Plugin, index: number, parts: { Part }?): Terrain
+  local want = wanted(parts)
+  local code = plugin:code(index)
+  if code ~= LandTag then fail(`land.read takes a LAND record, not {Tags.display(code)}`) end
+
+  -- Like decoding, a subrecord given twice counts as its last.
+  local last: { [number]: Plugin.Subrecord } = {}
+  for _, sub in plugin:subrecords(index) do
+    last[sub.code] = sub
+  end
+
+  local source = plugin:span(index)
+
+  -- Where the payload of the record's `tag` subrecord is, or nil without one.
+  local function payload(tag: string, length: number): number?
+    local sub = last[Tags.code(tag)]
+    if not sub then return nil end
+    if sub.size ~= length then fail(`LAND {tag} is {sub.size} bytes, not {length}`) end
+
+    return sub.payload
+  end
+
+  local terrain: Terrain = {}
+
+  local grid = payload('INTV', 8)
+  if grid then terrain.grid = { buffer.readi32(source, grid), buffer.readi32(source, grid + 4) } end
+
+  local flags = payload('DATA', 4)
+  if flags then terrain.flags = buffer.readu32(source, flags) end
+
+  local heights = if want.heights then payload('VHGT', HeightsLength) else nil
+  if heights then
+    terrain.heightOffset = buffer.readf32(source, heights)
+    terrain.heights = steps(source, heights + 4)
+  end
+
+  local copies: { [string]: buffer } = {}
+  for _, name in PartNames do
+    if name == 'heights' or not want[name] then continue end
+
+    local length = PartLengths[name]
+    local at = payload(PartTags[name], length)
+    if not at then continue end
+
+    local copy = buffer.create(length)
+    buffer.copy(copy, 0, source, at, length)
+    copies[name] = copy
+  end
+
+  terrain.normals, terrain.colors = copies.normals, copies.colors
+  terrain.textures, terrain.worldMap = copies.textures, copies.worldMap
+  return terrain
+end
+
+--- A buffer part of a `write`, checked to be the part's length; nil for one that's missing or
+--- `false`.
+local function part(terrain: { [string]: unknown }, name: string): buffer?
+  local value = terrain[name]
+  if not value then return nil end
+  if type(value) ~= 'buffer' then fail(`LAND {name} must be a buffer, not {type(value)}`) end
+
+  local length = PartLengths[name]
+  if buffer.len(value) ~= length then
+    fail(`LAND {name} must be {length} bytes, not {buffer.len(value)}`)
+  end
+
+  return value
+end
+
+--- A number field of a `write`, or nil when it's missing.
+local function numberOf(terrain: { [string]: unknown }, name: string): number?
+  local value = terrain[name]
+  if value == nil then return nil end
+  if type(value) ~= 'number' then fail(`LAND {name} must be a number, not {type(value)}`) end
+
+  return value
+end
+
+--- The `{ x, y }` a `write` moves the LAND to, or nil when it leaves it where it is.
+local function gridOf(terrain: { [string]: unknown }): { number }?
+  local grid = terrain.grid
+  if grid == nil then return nil end
+  if type(grid) ~= 'table' then fail 'LAND grid must be { x, y }' end
+
+  local cell = grid :: { unknown }
+  local column, row = cell[1], cell[2]
+  if #cell ~= 2 or type(column) ~= 'number' or type(row) ~= 'number' then
+    fail 'LAND grid must be { x, y }'
+  end
+
+  if column % 1 ~= 0 or row % 1 ~= 0 then fail 'LAND grid must be { x, y }' end
+
+  return { column, row }
+end
+
+--- Writes the terrain's parts into LAND record `index`. Missing ones stay as they are, and `false`
+--- leaves a part's subrecord out. Heights keep the record's offset without `heightOffset`, and a
+--- step no i8 delta reaches is an error. Otherwise the subrecords follow the record's `flags`, and
+--- the ones the terrain didn't change keep their bytes (`plugin:set`).
+local function write(plugin: Plugin, index: number, terrain: Parts)
+  local given = (terrain :: unknown) :: { [string]: unknown }
+  for name in given do
+    if WriteOptions[name] then continue end
+
+    fail(
+      `unknown land.write option '{name}': expected colors, flags, grid, heightOffset, heights, normals, textures, or worldMap`
+    )
+  end
+
+  if plugin:code(index) ~= LandTag then fail 'land.write takes a LAND record' end
+
+  local land = plugin:decode(index) :: Value
+  local grid, flags, offset =
+    gridOf(given), numberOf(given, 'flags'), numberOf(given, 'heightOffset')
+  if grid then land.grid = grid end
+  if flags then land.landscapeFlags = Schema.flagText(Schema.Flags.LandscapeFlags, flags) end
+
+  local heights = part(given, 'heights')
+  local vertexHeights = land.vertexHeights :: Value
+  if heights then
+    land.vertexHeights =
+      { offset = offset or vertexHeights.offset, data = Schema.base64(deltas(heights), 0, Vertices) }
+  elseif offset then
+    vertexHeights.offset = offset
+  end
+
+  for _, name in PartNames do
+    local field = PartFields[name]
+    local data = if field then part(given, name) else nil
+    if data then land[field] = { data = Schema.base64(data, 0, buffer.len(data)) } end
+  end
+
+  plugin:set(index, land)
+
+  -- A typed LAND writes every part its flags name, so a part left out is taken out afterwards.
+  for _, name in PartNames do
+    if given[name] == false then plugin:deleteSubrecordsByTag(index, PartTags[name]) end
+  end
+end
+
+return table.freeze { read = read, write = write }

@@ -1,7 +1,8 @@
 --!strict
 --!native
 -- tes3's own cases: jess-plugin's raw spine tests and jess-omwaddon's codec edges, on bytes
--- built here, so the suite needs nothing but the package.
+-- built here, and jess's script API contracts for terrain, record metadata, and building, on
+-- jess-omwaddon's plugin with a record of every type (`assets/all_types.esp`).
 local tes3 = require '@tes3'
 local test = require '@jess/test'
 local expect = test.expect
@@ -639,6 +640,315 @@ suite.describe('OpenMW saves', function()
     expect(save.encodeLuaData { kind = 'nil' }).toBe ''
     expect(function() save.decodeLuaData(buffer.fromstring '\1', 0, 1) end).toThrow 'unsupported Lua serialization format version 1'
     expect(function() save.decodeLuaData(buffer.fromstring '\0\0\0', 0, 3) end).toThrow 'unexpected end of serialized Lua data at offset 2'
+  end)
+end)
+
+--- Where this file is, from its chunk name: the folder the suite and its asset are in.
+local function here(): string
+  local source = debug.info(1, 's')
+  local first = string.sub(source, 1, 1)
+  local path = if first == '@' or first == '=' then string.sub(source, 2) else source
+
+  return string.match(path, '^(.*)/[^/]*$') or '.'
+end
+
+--- jess-omwaddon's plugin with a record of every type: what jess's contract fixtures opened.
+local function allTypes(): tes3.Plugin
+  return tes3.open(assert(jess.fs.readBuffer(`{here()}/assets/all_types.esp`)))
+end
+
+--- FNV-1a (32 bits) of a buffer's bytes, as the contracts' expected results spell a buffer.
+local function fnv(data: buffer): string
+  local hash = 2166136261
+  for index = 0, buffer.len(data) - 1 do
+    hash = bit32.bxor(hash, buffer.readu8(data, index))
+    -- hash * 16777619, kept exact: 16777619 is 2^24 + 403.
+    hash = (bit32.lshift(hash, 24) + hash * 403) % 4294967296
+  end
+
+  return string.format('%08x', hash)
+end
+
+local function firstOf(plugin: tes3.Plugin, tag: string): number
+  for index = 0, plugin:count() - 1 do
+    if plugin:tag(index) == tag then return index end
+  end
+
+  return error(`no {tag} record`)
+end
+
+--- Which parts a terrain has, with each buffer's length.
+local function partsOf(terrain: tes3.LandTerrain): { [string]: unknown }
+  local function length(part: buffer?): number? return if part then buffer.len(part) else nil end
+
+  return {
+    grid = terrain.grid,
+    flags = terrain.flags,
+    heightOffset = terrain.heightOffset,
+    heights = length(terrain.heights),
+    normals = length(terrain.normals),
+    colors = length(terrain.colors),
+    textures = length(terrain.textures),
+    worldMap = length(terrain.worldMap),
+  }
+end
+
+local Vertices = 65 * 65
+
+-- jess's `jess.land` contract (`contracts/land`) and its `land.rs` cases: the same answers, but
+-- for errors naming `land.read` and `land.write`, not `jess.land.read` and `jess.land.write`.
+suite.describe('LAND terrain', function()
+  suite.it('reads a LAND\'s parts as buffers', function()
+    local plugin = allTypes()
+    local land = firstOf(plugin, 'LAND')
+    local terrain = tes3.land.read(plugin, land)
+    expect(terrain.grid).toEqual { -15, -8 }
+    expect(terrain.flags).toBe(15)
+    expect(terrain.heightOffset).toBe(-256)
+    expect({
+      heights = fnv(terrain.heights :: buffer),
+      normals = fnv(terrain.normals :: buffer),
+      colors = fnv(terrain.colors :: buffer),
+      textures = fnv(terrain.textures :: buffer),
+      worldMap = fnv(terrain.worldMap :: buffer),
+    }).toEqual {
+      heights = 'fdf160a4',
+      normals = 'ecac9ce8',
+      colors = 'a00d8f49',
+      textures = '64916e85',
+      worldMap = 'a2e768ee',
+    }
+
+    expect(partsOf(terrain)).toEqual {
+      grid = { -15, -8 },
+      flags = 15,
+      heightOffset = -256,
+      heights = 16900,
+      normals = 12675,
+      colors = 12675,
+      textures = 512,
+      worldMap = 81,
+    }
+
+    expect(partsOf(tes3.land.read(plugin, land, { 'heights', 'worldMap' }))).toEqual {
+      grid = { -15, -8 },
+      flags = 15,
+      heightOffset = -256,
+      heights = 16900,
+      worldMap = 81,
+    }
+
+    expect(partsOf(tes3.land.read(plugin, land, {}))).toEqual { grid = { -15, -8 }, flags = 15 }
+  end)
+
+  suite.it('sums VHGT\'s deltas down the first column and along each row', function()
+    local deltas = buffer.create(4 + Vertices + 3)
+    buffer.writef32(deltas, 0, 2.5)
+    -- Row 0 starts at 3 and climbs one a vertex; row 1 starts 2 below row 0's start and falls.
+    buffer.writei8(deltas, 4, 3)
+    buffer.writei8(deltas, 4 + 65, -2)
+    for column = 1, 64 do
+      buffer.writei8(deltas, 4 + column, 1)
+      buffer.writei8(deltas, 4 + 65 + column, -1)
+    end
+
+    local plugin = open(
+      record(
+        'LAND',
+        subrecord('INTV', string.pack('<i4i4', 1, 2))
+          .. subrecord('DATA', u32(1))
+          .. subrecord('VHGT', buffer.tostring(deltas))
+      )
+    )
+    local terrain = tes3.land.read(plugin, 0)
+    local heights = terrain.heights :: buffer
+    expect(terrain.heightOffset).toBe(2.5)
+    expect({
+      buffer.readi32(heights, 0),
+      buffer.readi32(heights, 64 * 4),
+      buffer.readi32(heights, 65 * 4),
+      buffer.readi32(heights, (65 + 64) * 4),
+      buffer.readi32(heights, 130 * 4),
+    }).toEqual { 3, 67, 1, -63, 1 }
+    expect(terrain.normals).toBeNil()
+
+    -- Writing the heights back gives VHGT the same deltas.
+    tes3.land.write(plugin, 0, { heights = heights })
+    local source, at, size = plugin:findSubrecord(0, tes3.tags.code 'VHGT')
+    expect(buffer.readstring(source :: buffer, at, size)).toBe(buffer.tostring(deltas))
+  end)
+
+  suite.it('writes a terrain back without changing a byte', function()
+    local bytes = assert(jess.fs.readBuffer(`{here()}/assets/all_types.esp`))
+    local plugin = tes3.open(bytes)
+    local land = firstOf(plugin, 'LAND')
+    tes3.land.write(plugin, land, tes3.land.read(plugin, land))
+    expect(plugin:isDirty(land)).toBe(false)
+    expect(buffer.tostring(plugin:save()) == buffer.tostring(bytes)).toBe(true)
+  end)
+
+  suite.it('writes heights, and leaves out a part given as false', function()
+    local plugin = allTypes()
+    local land = firstOf(plugin, 'LAND')
+    local heights = buffer.create(Vertices * 4)
+    for vertex = 0, Vertices - 1 do
+      buffer.writei32(heights, vertex * 4, (vertex % 65) * 2)
+    end
+
+    tes3.land.write(plugin, land, { heights = heights, heightOffset = -16, worldMap = false })
+    local written = tes3.land.read(plugin, land)
+    expect(partsOf(written)).toEqual {
+      grid = { -15, -8 },
+      flags = 15,
+      heightOffset = -16,
+      heights = 16900,
+      normals = 12675,
+      colors = 12675,
+      textures = 512,
+    }
+
+    expect({
+      buffer.readi32(written.heights :: buffer, 0),
+      buffer.readi32(written.heights :: buffer, 64 * 4),
+    }).toEqual { 0, 128 }
+    expect(tags(plugin, land)).toEqual { 'INTV', 'DATA', 'VNML', 'VHGT', 'VCLR', 'VTEX' }
+    -- The parts the write didn't name are the bytes they were.
+    expect(fnv(written.normals :: buffer)).toBe 'ecac9ce8'
+    expect(fnv(written.colors :: buffer)).toBe 'a00d8f49'
+    expect(fnv(written.textures :: buffer)).toBe '64916e85'
+  end)
+
+  suite.it('leaves every other record\'s bytes alone', function()
+    local bytes = assert(jess.fs.readBuffer(`{here()}/assets/all_types.esp`))
+    local plugin, original = tes3.open(bytes), tes3.open(bytes)
+    local land = firstOf(plugin, 'LAND')
+    local colors = buffer.create(Vertices * 3)
+    buffer.fill(colors, 0, 200)
+    tes3.land.write(plugin, land, { colors = colors, grid = { 4, -5 } })
+
+    local saved = tes3.open(plugin:save())
+    expect(saved:count()).toBe(original:count())
+    local changed = {}
+    for index = 0, original:count() - 1 do
+      if buffer.tostring(saved:bytes(index)) ~= buffer.tostring(original:bytes(index)) then
+        table.insert(changed, index)
+      end
+    end
+
+    expect(changed).toEqual { land }
+    -- Within the LAND, only the grid and the colors are new bytes.
+    local differing = {}
+    local before, after = original:subrecords(land), saved:subrecords(land)
+    local was, now = original:span(land), saved:span(land)
+    for ordinal, sub in before do
+      local other = after[ordinal]
+      expect(other.tag).toBe(sub.tag)
+      local same = buffer.readstring(was, sub.payload, sub.size)
+        == buffer.readstring(now, other.payload, other.size)
+      if not same then table.insert(differing, sub.tag) end
+    end
+
+    expect(differing).toEqual { 'INTV', 'VCLR' }
+    expect(tes3.land.read(saved, land, {}).grid).toEqual { 4, -5 }
+  end)
+
+  suite.it('builds a LAND from its parts', function()
+    local plugin = tes3.new()
+    plugin:insertValue(1, {
+      type = 'Landscape',
+      grid = { 3, -2 },
+      landscapeFlags = 'USES_VERTEX_HEIGHTS_AND_NORMALS | USES_TEXTURES',
+    })
+
+    local heights, normals = buffer.create(Vertices * 4), buffer.create(Vertices * 3)
+    local textures = buffer.create(512)
+    for vertex = 0, Vertices - 1 do
+      buffer.writei32(heights, vertex * 4, (vertex % 65) * 3 - (vertex // 65) * 2)
+      buffer.writei8(normals, vertex * 3 + 2, 127)
+    end
+
+    buffer.writeu16(textures, 510, 7)
+    tes3.land.write(
+      plugin,
+      1,
+      { heightOffset = -4, heights = heights, normals = normals, textures = textures }
+    )
+
+    local terrain = tes3.land.read(plugin, 1)
+    expect(terrain.grid).toEqual { 3, -2 }
+    expect(terrain.flags).toBe(5)
+    expect(terrain.heightOffset).toBe(-4)
+    expect(buffer.tostring(terrain.heights :: buffer) == buffer.tostring(heights)).toBe(true)
+    expect(buffer.tostring(terrain.normals :: buffer) == buffer.tostring(normals)).toBe(true)
+    expect(buffer.readu16(terrain.textures :: buffer, 510)).toBe(7)
+    expect(terrain.colors).toBeNil()
+    expect(buffer.len(terrain.worldMap :: buffer)).toBe(81)
+    expect(((plugin:decode(1) :: tes3.Value).vertexHeights :: tes3.Value).offset).toBe(-4)
+
+    tes3.land.write(plugin, 1, { worldMap = false })
+    expect(tags(plugin, 1)).toEqual { 'INTV', 'DATA', 'VNML', 'VHGT', 'VTEX' }
+    expect(tes3.land.read(plugin, 1).worldMap).toBeNil()
+
+    local only = tes3.land.read(plugin, 1, { 'textures' })
+    expect(only.heights).toBeNil()
+    expect(only.normals).toBeNil()
+    expect(only.textures ~= nil).toBe(true)
+
+    -- The flags decide the subrecords: colors come, and textures go. The world map this LAND
+    -- lost stays lost, as a write changes only what the terrain does.
+    tes3.land.write(plugin, 1, { flags = 3, heightOffset = 9 })
+    expect(tags(plugin, 1)).toEqual { 'INTV', 'DATA', 'VNML', 'VHGT', 'VCLR' }
+    expect(tes3.land.read(plugin, 1, { 'heights' }).heightOffset).toBe(9)
+    expect((plugin:decode(1) :: tes3.Value).landscapeFlags).toBe 'USES_VERTEX_HEIGHTS_AND_NORMALS | USES_VERTEX_COLORS'
+  end)
+
+  suite.it('counts a subrecord given twice as its last, and refuses one of the wrong size', function()
+    local first, second = string.rep('\1', 81), string.rep('\2', 81)
+    local twice = open(
+      record(
+        'LAND',
+        subrecord('INTV', string.pack('<i4i4', 0, 0))
+          .. subrecord('WNAM', first)
+          .. subrecord('WNAM', second)
+      )
+    )
+    expect(buffer.tostring(tes3.land.read(twice, 0).worldMap :: buffer)).toBe(second)
+    expect(tes3.land.read(twice, 0).flags).toBeNil()
+
+    local short = open(record('LAND', subrecord('VNML', 'short')))
+    expect(function() tes3.land.read(short, 0, { 'normals' }) end).toThrow 'LAND VNML is 5 bytes, not 12675'
+    -- A part that isn't asked for isn't checked.
+    expect(partsOf(tes3.land.read(short, 0, { 'colors' }))).toEqual {}
+    local flagless = open(record('LAND', subrecord('DATA', '\1')))
+    expect(function() tes3.land.read(flagless, 0, {}) end).toThrow 'LAND DATA is 1 bytes, not 4'
+  end)
+
+  suite.it('refuses what isn\'t a LAND or a terrain', function()
+    local plugin = allTypes()
+    local land, light = firstOf(plugin, 'LAND'), firstOf(plugin, 'LIGH')
+    local before = buffer.tostring(plugin:bytes(land))
+    local tooSteep, cliff = buffer.create(Vertices * 4), buffer.create(Vertices * 4)
+    buffer.writei32(tooSteep, 4, 1000)
+    buffer.writei32(cliff, 66 * 4, -200)
+
+    -- Each call is the error it is checked to raise.
+    expect(function() tes3.land.read(plugin, land, { 'heigths' :: any }) end).toThrow 'unknown LAND part \'heigths\'; expected heights, normals, colors, textures, or worldMap'
+    expect(function() tes3.land.read(plugin, light) end).toThrow 'land.read takes a LAND record, not LIGH'
+    expect(function() tes3.land.write(plugin, light, {}) end).toThrow 'land.write takes a LAND record'
+    expect(function() tes3.land.write(plugin, land, { colors = buffer.create(3) }) end).toThrow 'LAND colors must be 12675 bytes, not 3'
+    expect(function() tes3.land.write(plugin, land, { normals = 'x' :: any }) end).toThrow 'LAND normals must be a buffer, not string'
+    expect(function() tes3.land.write(plugin, land, { textures = true :: any }) end).toThrow 'LAND textures must be a buffer, not boolean'
+    expect(function() tes3.land.write(plugin, land, { grid = { 1 } }) end).toThrow 'LAND grid must be { x, y }'
+    expect(function() tes3.land.write(plugin, land, { grid = { 1, 2.5 } }) end).toThrow 'LAND grid must be { x, y }'
+    expect(function() tes3.land.write(plugin, land, { flags = 'USES_TEXTURES' :: any }) end).toThrow 'LAND flags must be a number, not string'
+    expect(function() tes3.land.write(plugin, land, { heights = tooSteep }) end).toThrow 'LAND heights step too far at vertex (1, 0): a delta must fit in an i8'
+    expect(function() tes3.land.write(plugin, land, { heights = cliff }) end).toThrow 'LAND heights step too far at vertex (1, 1): a delta must fit in an i8'
+    expect(function() tes3.land.write(plugin, land, { height = cliff } :: any) end).toThrow 'unknown land.write option \'height\': expected colors, flags, grid, heightOffset, heights, normals, textures, or worldMap'
+    -- A write that fails changes nothing, even with parts before the bad one that were fine.
+    expect(function()
+      tes3.land.write(plugin, land, { grid = { 9, 9 }, worldMap = buffer.create(80) })
+    end).toThrow 'LAND worldMap must be 81 bytes, not 80'
+    expect(buffer.tostring(plugin:bytes(land))).toBe(before)
   end)
 end)
 

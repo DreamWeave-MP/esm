@@ -15,6 +15,7 @@ copies every untouched record's original bytes, so an unedited plugin saves byte
 local Decode = require '@self/decode'
 local Display = require '@self/display'
 local Encode = require '@self/encode'
+local Land = require '@self/land'
 local Plugin = require '@self/plugin'
 local Records = require '@self/records'
 local Save = require '@self/save'
@@ -38,6 +39,9 @@ export type SaveProfile = Save.Profile
 export type Compatibility = Save.Compatibility
 export type StringField = Records.StringField
 export type Key = Records.Key
+export type LandPart = Land.Part
+export type LandTerrain = Land.Terrain
+export type LandParts = Land.Parts
 
 --- Every record type jess-omwaddon decodes: its tag and its name.
 local RecordTypes: { { tag: string, name: string } } = {}
@@ -61,6 +65,9 @@ return table.freeze {
   --- Readable record values: what `jess plugin dump` prints.
   display = Display,
   encode = Encode.encode,
+  --- LAND terrain as buffers: `land.read(plugin, index, parts?)` gives a record's heights, normals,
+  --- colors, texture indices, and world map, and `land.write(plugin, index, terrain)` puts them back.
+  land = Land,
   new = Plugin.new,
   open = open,
   recordTypes = RecordTypes,
