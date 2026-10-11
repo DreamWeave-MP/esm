@@ -1050,6 +1050,58 @@ suite.describe('record metadata', function()
   end)
 end)
 
+-- jess's `jess.plugin.new` contract (`contracts/plugin/build`): the same bytes, from the calls a
+-- script makes today.
+suite.describe('building', function()
+  suite.it('builds the empty plugin jess.plugin.new built', function()
+    local empty = tes3.new()
+    local bytes = empty:save()
+    expect(buffer.len(bytes)).toBe(324)
+    expect(fnv(bytes)).toBe '11dc8ac6'
+    expect(empty:masters()).toEqual {}
+    expect(empty.encoding).toBe 'win1252'
+  end)
+
+  suite.it('builds a plugin with a header, masters, and a record', function()
+    local master = tes3.new('master', { encoding = 'win1250' })
+    master:setAuthor 'Jess'
+    master:setDescription 'Built in a fixture'
+    master:setMasters { { name = 'Base.esm', size = 1234 } }
+    master:insertValue(master:count(), { type = 'Static', id = 'rock', mesh = 'rock.nif' })
+    -- An insert leaves the header's count as it was; the script sets it before it saves.
+    expect(master:header().recordCount).toBe(0)
+    expect(master:updateRecordCount()).toBe(true)
+    expect(master:header().recordCount).toBe(1)
+
+    expect(master:setAuthor 'Someone').toBe(true)
+    expect(master:setFileType 'plugin').toBe(true)
+    expect(master:setAuthor 'Someone').toBe(false)
+    local masters = { { name = 'Other.esm', size = 2 ^ 40 }, { name = 'Third.esm', size = 7 } }
+    expect(master:setMasters(masters)).toBe(true)
+    expect(master:setMasters(masters)).toBe(false)
+
+    expect(master:header()).toEqual {
+      version = string.unpack('<f', string.pack('<f', 1.3)),
+      fileType = 'plugin',
+      author = 'Someone',
+      description = 'Built in a fixture',
+      recordCount = 1,
+    }
+
+    expect(master:masters()).toEqual {
+      { name = 'Other.esm', size = 1099511627776, mast = 1, data = 2 },
+      { name = 'Third.esm', size = 7, mast = 3, data = 4 },
+    }
+
+    expect(master.encoding).toBe 'win1250'
+    expect(master:updateRecordCount()).toBe(false)
+    expect(master:tag(1)).toBe 'STAT'
+    local bytes = master:save()
+    expect(buffer.len(bytes)).toBe(438)
+    expect(fnv(bytes)).toBe '3ae27591'
+  end)
+end)
+
 suite.describe('round trips', function()
   suite.it('checks a round trip, with types left out and cruft skipped', function()
     local bytes = record('TES3', '') .. record('GMST', subrecord('NAME', 'a\0'))
