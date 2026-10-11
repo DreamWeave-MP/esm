@@ -22,10 +22,10 @@ type Value = Decode.Value
 --- One subrecord: its tag and its whole bytes, header included.
 type Sub = { tag: number, bytes: string }
 
-local NAM0 = Tags.code 'NAM0'
-local MVRF = Tags.code 'MVRF'
-local FRMR = Tags.code 'FRMR'
-local CELL = Tags.code 'CELL'
+local Nam0Tag = Tags.code 'NAM0'
+local MvrfTag = Tags.code 'MVRF'
+local FrmrTag = Tags.code 'FRMR'
+local CellTag = Tags.code 'CELL'
 
 local function u32(text: string, at: number): number
   return (string.unpack('<I4', text, at)) :: number
@@ -33,16 +33,16 @@ end
 
 local function split(payload: string): { Sub }?
   local out: { Sub } = {}
-  local p, n = 1, #payload
-  while p <= n do
-    if p + 7 > n then return nil end
+  local position, length = 1, #payload
+  while position <= length do
+    if position + 7 > length then return nil end
 
-    local tag, size = u32(payload, p), u32(payload, p + 4)
-    local finish = p + 8 + size
-    if finish - 1 > n then return nil end
+    local tag, size = u32(payload, position), u32(payload, position + 4)
+    local finish = position + 8 + size
+    if finish - 1 > length then return nil end
 
-    table.insert(out, { tag = tag, bytes = string.sub(payload, p, finish - 1) })
-    p = finish
+    table.insert(out, { tag = tag, bytes = string.sub(payload, position, finish - 1) })
+    position = finish
   end
 
   return out
@@ -54,28 +54,28 @@ end
 local function align(left: { Sub }, right: { Sub }, score: (Sub, Sub) -> number?): { number }
   local rows, columns = #left, #right
   local width = columns + 1
-  local table_: { number } = table.create((rows + 1) * width, 0)
+  local scores: { number } = table.create((rows + 1) * width, 0)
   local function at(row: number, column: number): number return row * width + column + 1 end
 
   for row = rows - 1, 0, -1 do
     for column = columns - 1, 0, -1 do
-      local skip = math.max(table_[at(row + 1, column)], table_[at(row, column + 1)])
-      local s = score(left[row + 1], right[column + 1])
-      local take = if s then s + table_[at(row + 1, column + 1)] else 0
-      table_[at(row, column)] = math.max(skip, take)
+      local skip = math.max(scores[at(row + 1, column)], scores[at(row, column + 1)])
+      local pairScore = score(left[row + 1], right[column + 1])
+      local take = if pairScore then pairScore + scores[at(row + 1, column + 1)] else 0
+      scores[at(row, column)] = math.max(skip, take)
     end
   end
 
   local pairs: { number } = table.create(rows, 0)
   local row, column = 0, 0
   while row < rows and column < columns do
-    local current = table_[at(row, column)]
-    local s = score(left[row + 1], right[column + 1])
-    if s and current == s + table_[at(row + 1, column + 1)] then
+    local current = scores[at(row, column)]
+    local pairScore = score(left[row + 1], right[column + 1])
+    if pairScore and current == pairScore + scores[at(row + 1, column + 1)] then
       pairs[row + 1] = column + 1
       row += 1
       column += 1
-    elseif current == table_[at(row + 1, column)] then
+    elseif current == scores[at(row + 1, column)] then
       row += 1
     else
       column += 1
@@ -90,12 +90,15 @@ end
 --- Original subrecords the encoding doesn't produce are kept unless a changed subrecord of the
 --- same tag replaces them.
 local function mergeSubrecords(original: { Sub }, old: { Sub }, new: { Sub }): string
-  local oldToOriginal = align(old, original, function(a, b)
-    if a.bytes == b.bytes then return 2 end
+  local oldToOriginal = align(old, original, function(left, right)
+    if left.bytes == right.bytes then return 2 end
 
-    return if a.tag == b.tag then 1 else nil
+    return if left.tag == right.tag then 1 else nil
   end)
-  local newToOld = align(new, old, function(a, b) return if a.bytes == b.bytes then 1 else nil end)
+
+  local newToOld = align(new, old, function(left, right)
+    return if left.bytes == right.bytes then 1 else nil
+  end)
   local aligned: { [number]: boolean } = {}
   for _, index in oldToOriginal do
     if index > 0 then aligned[index] = true end
@@ -149,9 +152,9 @@ type CellParts = { header: { Sub }, references: { Reference }, nam0: Sub? }
 
 local function cellParts(subs: { Sub }): CellParts?
   local headerEnd = #subs + 1
-  for i, sub in subs do
-    if sub.tag == NAM0 or sub.tag == MVRF or sub.tag == FRMR then
-      headerEnd = i
+  for ordinal, sub in subs do
+    if sub.tag == Nam0Tag or sub.tag == MvrfTag or sub.tag == FrmrTag then
+      headerEnd = ordinal
       break
     end
   end
@@ -162,9 +165,9 @@ local function cellParts(subs: { Sub }): CellParts?
   local pending: { string } = {}
   local currentKey: number? = nil
   local current: { string } = {}
-  for i = headerEnd, #subs do
-    local sub = subs[i]
-    if sub.tag == NAM0 or sub.tag == MVRF or sub.tag == FRMR then
+  for ordinal = headerEnd, #subs do
+    local sub = subs[ordinal]
+    if sub.tag == Nam0Tag or sub.tag == MvrfTag or sub.tag == FrmrTag then
       if currentKey then
         table.insert(
           parts.references,
@@ -173,10 +176,10 @@ local function cellParts(subs: { Sub }): CellParts?
         currentKey = nil
       end
 
-      if sub.tag == NAM0 then
+      if sub.tag == Nam0Tag then
         parts.nam0 = sub
         temporary = true
-      elseif sub.tag == MVRF then
+      elseif sub.tag == MvrfTag then
         table.insert(pending, sub.bytes)
       else
         if #sub.bytes ~= 12 then return nil end
@@ -210,24 +213,25 @@ end
 --- keep their bytes and order; changed ones take the new encoding; new ones go at the end of the
 --- persistent or temporary references.
 local function mergeCell(original: { Sub }, old: { Sub }, new: { Sub }): string?
-  local o, d, n = cellParts(original), cellParts(old), cellParts(new)
-  if not o or not d or not n then return nil end
+  local originalParts, oldParts, newParts = cellParts(original), cellParts(old), cellParts(new)
+  if not originalParts or not oldParts or not newParts then return nil end
 
   local oldReferences: { [number]: string } = {}
-  for _, ref in d.references do
+  for _, ref in oldParts.references do
     oldReferences[ref.key] = ref.bytes
   end
 
   local newReferences: { [number]: Reference } = {}
-  for _, ref in n.references do
+  for _, ref in newParts.references do
     newReferences[ref.key] = ref
   end
 
-  local out: { string } = { mergeSubrecords(o.header, d.header, n.header) }
+  local out: { string } =
+    { mergeSubrecords(originalParts.header, oldParts.header, newParts.header) }
   local persistent: { string }, temporary: { string } = {}, {}
   local originalKeys: { [number]: boolean } = {}
   local originalTemporary = 0
-  for _, ref in o.references do
+  for _, ref in originalParts.references do
     originalKeys[ref.key] = true
     if ref.temporary then
       originalTemporary += 1
@@ -242,10 +246,10 @@ local function mergeCell(original: { Sub }, old: { Sub }, new: { Sub }): string?
       bytes = ref.bytes
     elseif oldBytes then
       -- Within a changed reference, only its changed subrecords take the new encoding.
-      local a, b, c = split(ref.bytes), split(oldBytes), split(changed.bytes)
-      if not a or not b or not c then return nil end
+      local originalSubs, oldSubs, newSubs = split(ref.bytes), split(oldBytes), split(changed.bytes)
+      if not originalSubs or not oldSubs or not newSubs then return nil end
 
-      bytes = mergeSubrecords(a, b, c)
+      bytes = mergeSubrecords(originalSubs, oldSubs, newSubs)
     else
       bytes = changed.bytes
     end
@@ -253,7 +257,7 @@ local function mergeCell(original: { Sub }, old: { Sub }, new: { Sub }): string?
     table.insert(if changed.temporary then temporary else persistent, bytes)
   end
 
-  for _, ref in n.references do
+  for _, ref in newParts.references do
     if not originalKeys[ref.key] then
       table.insert(if ref.temporary then temporary else persistent, ref.bytes)
     end
@@ -266,7 +270,7 @@ local function mergeCell(original: { Sub }, old: { Sub }, new: { Sub }): string?
   -- Vanilla counts don't always match the references that follow (expansions keep a master's
   -- NAM0 in cells they only change the header of), so the original count moves by the number of
   -- temporary references added or removed.
-  local nam0 = o.nam0
+  local nam0 = originalParts.nam0
   local originalCount = if nam0 and #nam0.bytes == 12 then u32(nam0.bytes, 9) else nil
   local count = if originalCount then originalCount + #temporary - originalTemporary else #temporary
   if nam0 and originalCount == count then
@@ -274,7 +278,7 @@ local function mergeCell(original: { Sub }, old: { Sub }, new: { Sub }): string?
   elseif #temporary > 0 then
     if count < 0 or count > 4294967295 then return nil end
 
-    table.insert(out, string.pack('<I4I4I4', NAM0, 4, count))
+    table.insert(out, string.pack('<I4I4I4', Nam0Tag, 4, count))
   end
 
   for _, bytes in temporary do
@@ -285,17 +289,17 @@ local function mergeCell(original: { Sub }, old: { Sub }, new: { Sub }): string?
 end
 
 local function merge(original: string, oldEncoded: string, newEncoded: string): string?
-  local a, b, c =
+  local originalSubs, oldSubs, newSubs =
     split(string.sub(original, 17)),
     split(string.sub(oldEncoded, 17)),
     split(string.sub(newEncoded, 17))
-  if not a or not b or not c then return nil end
+  if not originalSubs or not oldSubs or not newSubs then return nil end
 
   local payload: string?
-  if u32(original, 1) == CELL then
-    payload = mergeCell(a, b, c)
+  if u32(original, 1) == CellTag then
+    payload = mergeCell(originalSubs, oldSubs, newSubs)
   else
-    payload = mergeSubrecords(a, b, c)
+    payload = mergeSubrecords(originalSubs, oldSubs, newSubs)
   end
 
   if not payload then return nil end
@@ -310,12 +314,12 @@ local function merge(original: string, oldEncoded: string, newEncoded: string): 
 end
 
 --- Whether two values are equal the way Rust's `PartialEq` compares records: NaN never equals.
-local function equal(a: unknown, b: unknown): boolean
-  if type(a) ~= type(b) then return false end
+local function equal(first: unknown, second: unknown): boolean
+  if type(first) ~= type(second) then return false end
 
-  if type(a) ~= 'table' then return a == b end
+  if type(first) ~= 'table' then return first == second end
 
-  local left, right = a :: { [unknown]: unknown }, b :: { [unknown]: unknown }
+  local left, right = first :: { [unknown]: unknown }, second :: { [unknown]: unknown }
   for key, value in left do
     if not equal(value, right[key]) then return false end
   end
@@ -327,9 +331,9 @@ local function equal(a: unknown, b: unknown): boolean
   return true
 end
 
-local function decodes(bytes: string, enc: string): Value?
+local function decodes(bytes: string, encoding: string): Value?
   local source = buffer.fromstring(bytes)
-  local ok, value = pcall(Decode.decode, source, 0, buffer.len(source), enc)
+  local ok, value = pcall(Decode.decode, source, 0, buffer.len(source), encoding)
   return if ok then value else nil
 end
 
@@ -339,15 +343,15 @@ local function minimal(
   original: string,
   oldEncoded: string,
   newEncoded: string,
-  enc: string
+  encoding: string
 ): string?
   if oldEncoded == newEncoded then return nil end
 
   local merged = merge(original, oldEncoded, newEncoded)
   if not merged then return newEncoded end
 
-  local expected = decodes(newEncoded, enc)
-  local got = decodes(merged, enc)
+  local expected = decodes(newEncoded, encoding)
+  local got = decodes(merged, encoding)
   if expected and got and equal(got, expected) then return merged end
 
   return newEncoded

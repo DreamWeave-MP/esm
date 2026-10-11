@@ -14,37 +14,37 @@ local Text = require './text'
 
 type Plugin = Plugin.Plugin
 
-local TES3 = Tags.code 'TES3'
-local SCPT = Tags.code 'SCPT'
-local SCHD = Tags.code 'SCHD'
-local INFO = Tags.code 'INFO'
-local INAM = Tags.code 'INAM'
-local NAME = Tags.code 'NAME'
-local CELL = Tags.code 'CELL'
-local DIAL = Tags.code 'DIAL'
-local DATA = Tags.code 'DATA'
-local AMBI = Tags.code 'AMBI'
-local SCTX = Tags.code 'SCTX'
+local Tes3Tag = Tags.code 'TES3'
+local ScptTag = Tags.code 'SCPT'
+local SchdTag = Tags.code 'SCHD'
+local InfoTag = Tags.code 'INFO'
+local InamTag = Tags.code 'INAM'
+local NameTag = Tags.code 'NAME'
+local CellTag = Tags.code 'CELL'
+local DialTag = Tags.code 'DIAL'
+local DataTag = Tags.code 'DATA'
+local AmbiTag = Tags.code 'AMBI'
+local SctxTag = Tags.code 'SCTX'
 
 --- A record's id: INAM for dialogue responses, the SCHD name for scripts, NAME otherwise; nil for
 --- the TES3 header, a CELL opened without its header, and a record without its id subrecord.
 local function id(plugin: Plugin, index: number): string?
   local code = plugin:code(index)
-  if code == TES3 then return nil end
+  if code == Tes3Tag then return nil end
 
-  if code == CELL then
+  if code == CellTag then
     local parts = plugin:keptParts(index)
     if parts and not parts.header then return nil end
   end
 
-  if code == SCPT then
-    local source, at, size = plugin:findSubrecord(index, SCHD)
+  if code == ScptTag then
+    local source, at, size = plugin:findSubrecord(index, SchdTag)
     if not source or size < 32 then return nil end
 
     return Text.decode(source, at, 32, plugin.encoding)
   end
 
-  local source, at, size = plugin:findSubrecord(index, if code == INFO then INAM else NAME)
+  local source, at, size = plugin:findSubrecord(index, if code == InfoTag then InamTag else NameTag)
   if not source then return nil end
 
   -- In an OpenMW save, typed RefIds read as OpenMW spells them (`#-2 -9` for an exterior cell).
@@ -62,21 +62,21 @@ end
 --- decoding them; for content files, not saves, whose ids are typed.
 local function idSpan(plugin: Plugin, index: number): (buffer?, number, number)
   local code = plugin:code(index)
-  if code == TES3 then return nil, 0, 0 end
+  if code == Tes3Tag then return nil, 0, 0 end
 
-  if code == CELL then
+  if code == CellTag then
     local parts = plugin:keptParts(index)
     if parts and not parts.header then return nil, 0, 0 end
   end
 
   local source, at, size
-  if code == SCPT then
-    source, at, size = plugin:findSubrecord(index, SCHD)
+  if code == ScptTag then
+    source, at, size = plugin:findSubrecord(index, SchdTag)
     if not source or size < 32 then return nil, 0, 0 end
 
     size = 32
   else
-    source, at, size = plugin:findSubrecord(index, if code == INFO then INAM else NAME)
+    source, at, size = plugin:findSubrecord(index, if code == InfoTag then InamTag else NameTag)
     if not source then return nil, 0, 0 end
   end
 
@@ -86,8 +86,8 @@ local function idSpan(plugin: Plugin, index: number): (buffer?, number, number)
     finish -= 1
   end
 
-  for i = at, finish - 1 do
-    if buffer.readu8(bytes, i) == 0 then return bytes, at, i - at end
+  for position = at, finish - 1 do
+    if buffer.readu8(bytes, position) == 0 then return bytes, at, position - at end
   end
 
   return bytes, at, finish - at
@@ -99,11 +99,11 @@ export type Key = { type: string, id: string }
 local function objectKeys(plugin: Plugin): { Key }
   local seen: { [string]: boolean } = {}
   local keys: { Key } = {}
-  for i = 0, plugin:count() - 1 do
-    local recordId = id(plugin, i)
+  for index = 0, plugin:count() - 1 do
+    local recordId = id(plugin, index)
     if not recordId then continue end
 
-    local tag = Tags.display(plugin:code(i))
+    local tag = Tags.display(plugin:code(index))
     local key = tag .. '\0' .. recordId
     if seen[key] then continue end
 
@@ -111,10 +111,10 @@ local function objectKeys(plugin: Plugin): { Key }
     table.insert(keys, { type = tag, id = recordId })
   end
 
-  table.sort(keys, function(a: Key, b: Key)
-    if a.type ~= b.type then return a.type < b.type end
+  table.sort(keys, function(left: Key, right: Key)
+    if left.type ~= right.type then return left.type < right.type end
 
-    return a.id < b.id
+    return left.id < right.id
   end)
   return keys
 end
@@ -122,8 +122,8 @@ end
 --- The first record of type `tag` whose id is `recordId`, as a 0-based index, or nil.
 local function find(plugin: Plugin, tag: string, recordId: string): number?
   local code = Tags.code(tag)
-  for i = 0, plugin:count() - 1 do
-    if plugin:code(i) == code and id(plugin, i) == recordId then return i end
+  for index = 0, plugin:count() - 1 do
+    if plugin:code(index) == code and id(plugin, index) == recordId then return index end
   end
 
   return nil
@@ -132,10 +132,10 @@ end
 --- Every DIAL topic's id, in plugin order.
 local function dialogueTopics(plugin: Plugin): { string }
   local topics = {}
-  for i = 0, plugin:count() - 1 do
-    if plugin:code(i) ~= DIAL then continue end
+  for index = 0, plugin:count() - 1 do
+    if plugin:code(index) ~= DialTag then continue end
 
-    local topic = id(plugin, i)
+    local topic = id(plugin, index)
     if topic then table.insert(topics, topic) end
   end
 
@@ -144,20 +144,20 @@ end
 
 --- Whether a CELL is an interior (its DATA flag bit 0); false for other records.
 local function cellIsInterior(plugin: Plugin, index: number): boolean
-  if plugin:code(index) ~= CELL then return false end
+  if plugin:code(index) ~= CellTag then return false end
 
-  local source, at, size = plugin:findSubrecord(index, DATA)
+  local source, at, size = plugin:findSubrecord(index, DataTag)
   return source ~= nil and size >= 4 and bit32.btest(buffer.readu32(source, at), 1)
 end
 
 --- Whether a CELL is an exterior; false for other records.
 local function cellIsExterior(plugin: Plugin, index: number): boolean
-  return plugin:code(index) == CELL and not cellIsInterior(plugin, index)
+  return plugin:code(index) == CellTag and not cellIsInterior(plugin, index)
 end
 
 --- A cell's AMBI fog density, if present.
 local function cellAmbientFogDensity(plugin: Plugin, index: number): number?
-  local source, at, size = plugin:findSubrecord(index, AMBI)
+  local source, at, size = plugin:findSubrecord(index, AmbiTag)
   if not source or size < 16 then return nil end
 
   return buffer.readf32(source, at + 12)
@@ -165,7 +165,7 @@ end
 
 --- The legacy fog density in a cell's DATA, if present.
 local function cellDataFogDensity(plugin: Plugin, index: number): number?
-  local source, at, size = plugin:findSubrecord(index, DATA)
+  local source, at, size = plugin:findSubrecord(index, DataTag)
   if not source or size < 8 then return nil end
 
   return buffer.readf32(source, at + 4)
@@ -173,7 +173,7 @@ end
 
 --[[ String fields ]]
 
-local RGNN, PNAM, NNAM = Tags.code 'RGNN', Tags.code 'PNAM', Tags.code 'NNAM'
+local RgnnTag, PnamTag, NnamTag = Tags.code 'RGNN', Tags.code 'PNAM', Tags.code 'NNAM'
 
 --- The typed string field names subrecords carry in any record (jess-omwaddon's
 --- `string_field_name`), by subrecord tag.
@@ -203,16 +203,16 @@ end
 
 --- The string field a subrecord of a record of tag `record` is, by name, or nil.
 local function fieldName(record: number, sub: number): string?
-  if record == CELL and sub == RGNN then return 'region' end
+  if record == CellTag and sub == RgnnTag then return 'region' end
 
-  if record == INFO then
-    if sub == PNAM then return 'previous' end
+  if record == InfoTag then
+    if sub == PnamTag then return 'previous' end
 
-    if sub == NNAM then return 'next' end
+    if sub == NnamTag then return 'next' end
 
-    if sub == INAM then return 'info-id' end
+    if sub == InamTag then return 'info-id' end
 
-    if sub == NAME then return 'text' end
+    if sub == NameTag then return 'text' end
   end
 
   return FieldNames[sub]
@@ -233,7 +233,7 @@ local function stringFields(plugin: Plugin, index: number): { StringField }
   local code = plugin:code(index)
   local source = plugin:span(index)
   local out = {}
-  for i, sub in plugin:subrecords(index) do
+  for ordinal, sub in plugin:subrecords(index) do
     local name = fieldName(code, sub.code)
     if not name then continue end
 
@@ -241,7 +241,7 @@ local function stringFields(plugin: Plugin, index: number): { StringField }
       name = name,
       value = Text.decode(source, sub.payload, sub.size, plugin.encoding),
       tag = sub.tag,
-      subrecord = i - 1,
+      subrecord = ordinal - 1,
       start = sub.start,
       finish = sub.finish,
     })
@@ -257,7 +257,7 @@ local function fieldId(plugin: Plugin, index: number): string?
   if plugin.profile == 'omwsave' then return id(plugin, index) end
 
   local code = plugin:code(index)
-  if code == CELL then
+  if code == CellTag then
     local parts = plugin:keptParts(index)
     if parts and not parts.header then return nil end
   end
@@ -290,7 +290,7 @@ end
 
 --- A script record's source text (SCTX), if present.
 local function scriptText(plugin: Plugin, index: number): string?
-  local source, at, size = plugin:findSubrecord(index, SCTX)
+  local source, at, size = plugin:findSubrecord(index, SctxTag)
   if not source then return nil end
 
   return Text.decode(source, at, size, plugin.encoding)

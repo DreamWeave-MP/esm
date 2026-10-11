@@ -36,17 +36,17 @@ local HedrRecordCountOffset = 296
 local MaxLimitedSizeStringsFormat = 22
 local FlagIgnored = 0x1000
 
-local TES3 = Tags.code 'TES3'
-local HEDR = Tags.code 'HEDR'
-local MAST = Tags.code 'MAST'
-local DATA = Tags.code 'DATA'
-local FORM = Tags.code 'FORM'
-local CELL = Tags.code 'CELL'
-local SAVE = Tags.code 'SAVE'
-local FRMR = Tags.code 'FRMR'
-local MVRF = Tags.code 'MVRF'
-local CNDT = Tags.code 'CNDT'
-local NAM0 = Tags.code 'NAM0'
+local Tes3Tag = Tags.code 'TES3'
+local HedrTag = Tags.code 'HEDR'
+local MastTag = Tags.code 'MAST'
+local DataTag = Tags.code 'DATA'
+local FormTag = Tags.code 'FORM'
+local CellTag = Tags.code 'CELL'
+local SaveTag = Tags.code 'SAVE'
+local FrmrTag = Tags.code 'FRMR'
+local MvrfTag = Tags.code 'MVRF'
+local CndtTag = Tags.code 'CNDT'
+local Nam0Tag = Tags.code 'NAM0'
 
 export type Profile = 'raw' | 'tes3' | 'omwaddon' | 'omwsave'
 export type FileType = 'plugin' | 'master' | 'save'
@@ -113,11 +113,11 @@ export type Plugin = typeof(setmetatable({} :: PluginData, Plugin))
 
 local function fail(offset: number, message: string): never error(`{message} at offset {offset}`, 0) end
 
-local NextRevision = 1
+local nextRevision = 1
 
 local function revise(): number
-  NextRevision += 1
-  return NextRevision
+  nextRevision += 1
+  return nextRevision
 end
 
 --[[ Framing ]]
@@ -130,23 +130,25 @@ local function walk(
   to: number,
   stop: { [number]: boolean }?
 ): (number, number)
-  local p, count = from, 0
-  while p < to do
-    if p + SubrecordHeaderLength > to then fail(p, 'truncated subrecord header') end
+  local position, count = from, 0
+  while position < to do
+    if position + SubrecordHeaderLength > to then fail(position, 'truncated subrecord header') end
 
-    local tag = buffer.readu32(source, p)
-    if stop and stop[tag] then return p, count end
+    local tag = buffer.readu32(source, position)
+    if stop and stop[tag] then return position, count end
 
-    local finish = p + SubrecordHeaderLength + buffer.readu32(source, p + 4)
-    if finish > to then fail(p, `subrecord {Tags.display(tag)} extends past record payload`) end
+    local finish = position + SubrecordHeaderLength + buffer.readu32(source, position + 4)
+    if finish > to then
+      fail(position, `subrecord {Tags.display(tag)} extends past record payload`)
+    end
 
-    p, count = finish, count + 1
+    position, count = finish, count + 1
   end
 
-  return p, count
+  return position, count
 end
 
-local ReferenceTags = { [NAM0] = true, [MVRF] = true, [FRMR] = true }
+local ReferenceTags = { [Nam0Tag] = true, [MvrfTag] = true, [FrmrTag] = true }
 
 local function keepOf(keep: Keep): number
   if keep == 'whole' then return 3 end
@@ -178,13 +180,13 @@ local function cutCell(source: buffer, start: number, finish: number, parts: num
   local dropReferences = not bit32.btest(parts, 2) and split < finish
   if not dropHeader and not dropReferences then return nil end
 
-  local w = Writer.new(finish - start)
-  Writer.copy(w, source, start, RecordHeaderLength)
-  if not dropHeader then Writer.copy(w, source, payload, split - payload) end
+  local writer = Writer.new(finish - start)
+  Writer.copy(writer, source, start, RecordHeaderLength)
+  if not dropHeader then Writer.copy(writer, source, payload, split - payload) end
 
-  if not dropReferences then Writer.copy(w, source, split, finish - split) end
+  if not dropReferences then Writer.copy(writer, source, split, finish - split) end
 
-  local out = Writer.finish(w)
+  local out = Writer.finish(writer)
   buffer.writeu32(out, 4, buffer.len(out) - RecordHeaderLength)
   return out
 end
@@ -194,8 +196,8 @@ local function parse(source: buffer, options: OpenOptions?): Plugin
   Text.label(encoding)
   local profile: Profile = options and options.profile or 'raw'
   local keep = options and options.keep
-  local n = buffer.len(source)
-  if n >= 4294967295 then fail(0, 'plugin is 4 GiB or larger') end
+  local length = buffer.len(source)
+  if length >= 4294967295 then fail(0, 'plugin is 4 GiB or larger') end
 
   local starts: { number }, bodies: { buffer | false }, parts: { number } = {}, {}, {}
   if not keep then
@@ -207,8 +209,8 @@ local function parse(source: buffer, options: OpenOptions?): Plugin
       inner = { header = SubrecordHeaderLength, lengthAt = 4 },
     })
 
-    for i = 1, framed do
-      starts[i], bodies[i], parts[i] = buffer.readu32(spans, (i - 1) * 8), false, 3
+    for entry = 1, framed do
+      starts[entry], bodies[entry], parts[entry] = buffer.readu32(spans, (entry - 1) * 8), false, 3
     end
 
     if problem then
@@ -237,39 +239,41 @@ local function parse(source: buffer, options: OpenOptions?): Plugin
     )
   end
 
-  local count, p = 0, 0
-  while p < n do
-    if p + RecordHeaderLength > n then fail(p, 'truncated record header') end
+  local count, position = 0, 0
+  while position < length do
+    if position + RecordHeaderLength > length then fail(position, 'truncated record header') end
 
-    local tag = buffer.readu32(source, p)
-    local finish = p + RecordHeaderLength + buffer.readu32(source, p + 4)
+    local tag = buffer.readu32(source, position)
+    local finish = position + RecordHeaderLength + buffer.readu32(source, position + 4)
     local kept = 3
     if keep then
       local choice = keep(Tags.name(tag))
       if choice == 'skip' then
         -- A skipped record running past the end ends the plugin there.
-        p = math.min(finish, n)
+        position = math.min(finish, length)
         continue
       end
 
-      kept = if choice == 'framed' then -1 elseif tag == CELL then keepOf(choice) else 3
+      kept = if choice == 'framed' then -1 elseif tag == CellTag then keepOf(choice) else 3
     end
 
-    if finish > n then fail(p, `record {Tags.display(tag)} extends past end of file`) end
+    if finish > length then
+      fail(position, `record {Tags.display(tag)} extends past end of file`)
+    end
 
     if kept == 3 then
-      walk(source, p + RecordHeaderLength, finish, nil)
+      walk(source, position + RecordHeaderLength, finish, nil)
       count += 1
-      starts[count], bodies[count], parts[count] = p, false, 3
+      starts[count], bodies[count], parts[count] = position, false, 3
     elseif kept == -1 then
-      walk(source, p + RecordHeaderLength, finish, nil)
+      walk(source, position + RecordHeaderLength, finish, nil)
     else
-      local cut = cutCell(source, p, finish, kept)
+      local cut = cutCell(source, position, finish, kept)
       count += 1
-      starts[count], bodies[count], parts[count] = p, cut or false, if cut then kept else 3
+      starts[count], bodies[count], parts[count] = position, cut or false, if cut then kept else 3
     end
 
-    p = finish
+    position = finish
   end
 
   return setmetatable(
@@ -289,12 +293,12 @@ end
 --[[ Reading records ]]
 
 local function slot(self: Plugin, index: number): number
-  local i = index + 1
-  if i < 1 or i > #self.starts or i % 1 ~= 0 then
+  local entry = index + 1
+  if entry < 1 or entry > #self.starts or entry % 1 ~= 0 then
     fail(buffer.len(self.source), 'record index out of bounds')
   end
 
-  return i
+  return entry
 end
 
 --- How many records the plugin holds, header included.
@@ -302,21 +306,21 @@ function Plugin.count(self: Plugin): number return #self.starts end
 
 --- Where record `index`'s bytes are: the buffer, where they start, and where they end.
 function Plugin.span(self: Plugin, index: number): (buffer, number, number)
-  local i = slot(self, index)
-  local body = self.bodies[i]
+  local entry = slot(self, index)
+  local body = self.bodies[entry]
   if body then return body, 0, buffer.len(body) end
 
-  local start = self.starts[i]
+  local start = self.starts[entry]
   return self.source, start, start + RecordHeaderLength + buffer.readu32(self.source, start + 4)
 end
 
 --- Record `index`'s tag as a number (see `tags.luau`).
 function Plugin.code(self: Plugin, index: number): number
-  local i = slot(self, index)
-  local body = self.bodies[i]
+  local entry = slot(self, index)
+  local body = self.bodies[entry]
   if body then return buffer.readu32(body, 0) end
 
-  return buffer.readu32(self.source, self.starts[i])
+  return buffer.readu32(self.source, self.starts[entry])
 end
 
 --- Record `index`'s tag: `LIGH`.
@@ -337,8 +341,8 @@ end
 --- Where record `index` was in the original bytes, header included: `start, finish`. An inserted
 --- record's range is empty, where it was put.
 function Plugin.range(self: Plugin, index: number): (number, number)
-  local i = slot(self, index)
-  local start = self.starts[i]
+  local entry = slot(self, index)
+  local start = self.starts[entry]
   if start < 0 then return -start - 1, -start - 1 end
 
   return start, start + RecordHeaderLength + buffer.readu32(self.source, start + 4)
@@ -383,19 +387,19 @@ end
 function Plugin.subrecords(self: Plugin, index: number): { Subrecord }
   local source, start, finish = self:span(index)
   local out = {}
-  local p = start + RecordHeaderLength
-  while p < finish do
-    local tag = buffer.readu32(source, p)
-    local size = buffer.readu32(source, p + 4)
+  local position = start + RecordHeaderLength
+  while position < finish do
+    local tag = buffer.readu32(source, position)
+    local size = buffer.readu32(source, position + 4)
     table.insert(out, {
       tag = Tags.name(tag),
       code = tag,
       size = size,
-      start = p,
-      payload = p + SubrecordHeaderLength,
-      finish = p + SubrecordHeaderLength + size,
+      start = position,
+      payload = position + SubrecordHeaderLength,
+      finish = position + SubrecordHeaderLength + size,
     })
-    p += SubrecordHeaderLength + size
+    position += SubrecordHeaderLength + size
   end
 
   return out
@@ -405,12 +409,14 @@ end
 --- and its size, or nil.
 function Plugin.findSubrecord(self: Plugin, index: number, code: number): (buffer?, number, number)
   local source, start, finish = self:span(index)
-  local p = start + RecordHeaderLength
-  while p < finish do
-    local size = buffer.readu32(source, p + 4)
-    if buffer.readu32(source, p) == code then return source, p + SubrecordHeaderLength, size end
+  local position = start + RecordHeaderLength
+  while position < finish do
+    local size = buffer.readu32(source, position + 4)
+    if buffer.readu32(source, position) == code then
+      return source, position + SubrecordHeaderLength, size
+    end
 
-    p += SubrecordHeaderLength + size
+    position += SubrecordHeaderLength + size
   end
 
   return nil, 0, 0
@@ -421,8 +427,8 @@ end
 function Plugin.save(self: Plugin): buffer
   local source, starts, bodies = self.source, self.starts, self.bodies
   local total = 0
-  for i, start in starts do
-    local body = bodies[i]
+  for entry, start in starts do
+    local body = bodies[entry]
     total += if body
       then buffer.len(body)
       else RecordHeaderLength + buffer.readu32(source, start + 4)
@@ -430,8 +436,8 @@ function Plugin.save(self: Plugin): buffer
 
   local out = buffer.create(total)
   local at, runStart, runEnd = 0, 0, 0
-  for i, start in starts do
-    local body = bodies[i]
+  for entry, start in starts do
+    local body = bodies[entry]
     if body then
       if runEnd > runStart then
         buffer.copy(out, at, source, runStart, runEnd - runStart)
@@ -508,7 +514,7 @@ function Plugin.replaceBytes(self: Plugin, index: number, bytes: buffer | string
   local data = asBuffer(bytes)
   if buffer.len(data) < RecordHeaderLength then fail(0, 'truncated record header') end
 
-  local i = slot(self, index)
+  local entry = slot(self, index)
   local source, start = self:span(index)
   if buffer.readu32(data, 0) ~= buffer.readu32(source, start) then
     fail(self:range(index), 'replacement record has a different tag')
@@ -518,7 +524,7 @@ function Plugin.replaceBytes(self: Plugin, index: number, bytes: buffer | string
   checkPayload(data, RecordHeaderLength, length)
   local out = assemble(source, start, data, RecordHeaderLength, length)
   buffer.copy(out, 8, data, 8, 8)
-  self.bodies[i] = out
+  self.bodies[entry] = out
 end
 
 --- Inserts a record, given as its whole bytes, at position `index` (0-based); the records from
@@ -553,38 +559,38 @@ end
 --- Deletes record `index` from the saved output.
 function Plugin.delete(self: Plugin, index: number)
   touch(self)
-  local i = slot(self, index)
-  table.remove(self.starts, i)
-  table.remove(self.bodies, i)
-  table.remove(self.parts, i)
+  local entry = slot(self, index)
+  table.remove(self.starts, entry)
+  table.remove(self.bodies, entry)
+  table.remove(self.parts, entry)
 end
 
 --- Keeps only the records `keep` accepts (called with each 0-based index, in order).
 function Plugin.retain(self: Plugin, keep: (index: number) -> boolean)
   touch(self)
   local starts: { number }, bodies: { buffer | false }, parts: { number } = {}, {}, {}
-  local n = 0
-  for i, start in self.starts do
-    if not keep(i - 1) then continue end
+  local count = 0
+  for entry, start in self.starts do
+    if not keep(entry - 1) then continue end
 
-    n += 1
-    starts[n], bodies[n], parts[n] = start, self.bodies[i], self.parts[i]
+    count += 1
+    starts[count], bodies[count], parts[count] = start, self.bodies[entry], self.parts[entry]
   end
 
   self.starts, self.bodies, self.parts = starts, bodies, parts
 end
 
 --- One subrecord's bytes, header included, as `(buffer, start, finish)` or replaced.
-type Piece = { b: buffer, s: number, e: number }
+type Piece = { source: buffer, start: number, finish: number }
 
 local function pieces(self: Plugin, index: number): ({ Piece }, buffer, number)
   local source, start, finish = self:span(index)
   local out = {}
-  local p = start + RecordHeaderLength
-  while p < finish do
-    local e = p + SubrecordHeaderLength + buffer.readu32(source, p + 4)
-    table.insert(out, { b = source, s = p, e = e })
-    p = e
+  local position = start + RecordHeaderLength
+  while position < finish do
+    local next = position + SubrecordHeaderLength + buffer.readu32(source, position + 4)
+    table.insert(out, { source = source, start = position, finish = next })
+    position = next
   end
 
   return out, source, start
@@ -599,7 +605,7 @@ local function rebuild(
 )
   local length = 0
   for _, piece in list do
-    length += piece.e - piece.s
+    length += piece.finish - piece.start
   end
 
   local out = buffer.create(RecordHeaderLength + length)
@@ -607,8 +613,8 @@ local function rebuild(
   buffer.writeu32(out, 4, length)
   local at = RecordHeaderLength
   for _, piece in list do
-    buffer.copy(out, at, piece.b, piece.s, piece.e - piece.s)
-    at += piece.e - piece.s
+    buffer.copy(out, at, piece.source, piece.start, piece.finish - piece.start)
+    at += piece.finish - piece.start
   end
 
   self.bodies[slot(self, index)] = out
@@ -621,11 +627,11 @@ end
 
 local function newPiece(header: buffer, at: number, payload: buffer): Piece
   local length = buffer.len(payload)
-  local b = buffer.create(SubrecordHeaderLength + length)
-  buffer.copy(b, 0, header, at, 4)
-  buffer.writeu32(b, 4, length)
-  buffer.copy(b, SubrecordHeaderLength, payload)
-  return { b = b, s = 0, e = buffer.len(b) }
+  local out = buffer.create(SubrecordHeaderLength + length)
+  buffer.copy(out, 0, header, at, 4)
+  buffer.writeu32(out, 4, length)
+  buffer.copy(out, SubrecordHeaderLength, payload)
+  return { source = out, start = 0, finish = buffer.len(out) }
 end
 
 --- Replaces subrecord `sub` (0-based) of record `index` and rebuilds the record.
@@ -635,7 +641,7 @@ function Plugin.replaceSubrecord(self: Plugin, index: number, sub: number, paylo
   local piece = list[sub + 1]
   if not piece or sub % 1 ~= 0 then subrecordOutOfBounds(self, index) end
 
-  list[sub + 1] = newPiece(piece.b, piece.s, asBuffer(payload))
+  list[sub + 1] = newPiece(piece.source, piece.start, asBuffer(payload))
   rebuild(self, index, list, header, at)
 end
 
@@ -673,8 +679,8 @@ function Plugin.deleteSubrecords(self: Plugin, index: number, subs: { number }):
   if count == 0 then return 0 end
 
   local kept = {}
-  for i, piece in list do
-    if not remove[i - 1] then table.insert(kept, piece) end
+  for ordinal, piece in list do
+    if not remove[ordinal - 1] then table.insert(kept, piece) end
   end
 
   rebuild(self, index, kept, header, at)
@@ -688,7 +694,7 @@ function Plugin.deleteSubrecordsByTag(self: Plugin, index: number, tag: string):
   local list, header, at = pieces(self, index)
   local kept = {}
   for _, piece in list do
-    if buffer.readu32(piece.b, piece.s) ~= code then table.insert(kept, piece) end
+    if buffer.readu32(piece.source, piece.start) ~= code then table.insert(kept, piece) end
   end
 
   local count = #list - #kept
@@ -711,10 +717,10 @@ export type CellGroups = {
 local function codesOf(self: Plugin, index: number): { number }
   local source, start, finish = self:span(index)
   local codes = {}
-  local p = start + RecordHeaderLength
-  while p < finish do
-    table.insert(codes, buffer.readu32(source, p))
-    p += SubrecordHeaderLength + buffer.readu32(source, p + 4)
+  local position = start + RecordHeaderLength
+  while position < finish do
+    table.insert(codes, buffer.readu32(source, position))
+    position += SubrecordHeaderLength + buffer.readu32(source, position + 4)
   end
 
   return codes
@@ -724,28 +730,28 @@ end
 --- reference (MVRF, an optional CNDT, then the FRMR), else at the FRMR (`Cell::getNextRef` in
 --- OpenMW's `components/esm3/loadcell.cpp`).
 local function movedStart(codes: { number }, frmr: number): number
-  if codes[frmr - 1] == MVRF then return frmr - 1 end
+  if codes[frmr - 1] == MvrfTag then return frmr - 1 end
 
-  if codes[frmr - 1] == CNDT and codes[frmr - 2] == MVRF then return frmr - 2 end
+  if codes[frmr - 1] == CndtTag and codes[frmr - 2] == MvrfTag then return frmr - 2 end
 
   return frmr
 end
 
 --- A CELL's subrecords grouped by reference, or nil for another record.
 function Plugin.cellGroups(self: Plugin, index: number): CellGroups?
-  if self:code(index) ~= CELL then return nil end
+  if self:code(index) ~= CellTag then return nil end
 
   local codes = codesOf(self, index)
   local headerEnd = #codes
   local nam0: number? = nil
   local references = {}
   local current: number? = nil
-  for i, code in codes do
-    if code == NAM0 and not current then nam0 = i - 1 end
+  for ordinal, code in codes do
+    if code == Nam0Tag and not current then nam0 = ordinal - 1 end
 
-    if code ~= FRMR then continue end
+    if code ~= FrmrTag then continue end
 
-    local start = movedStart(codes, i)
+    local start = movedStart(codes, ordinal)
     if headerEnd == #codes then headerEnd = start - 1 end
 
     if current then table.insert(references, { current - 1, start - 2 }) end
@@ -758,30 +764,30 @@ function Plugin.cellGroups(self: Plugin, index: number): CellGroups?
   return { header = headerEnd, nam0 = nam0, references = references }
 end
 
---- The subrecords before a CELL's first reference, `[0, n)`, or nil for another record.
+--- The subrecords before a CELL's first reference, `[0, count)`, or nil for another record.
 function Plugin.cellHeaderSubrecords(self: Plugin, index: number): number?
-  if self:code(index) ~= CELL then return nil end
+  if self:code(index) ~= CellTag then return nil end
 
   -- Walks only up to the first reference, keeping the two codes before it for `movedStart`.
   local source, start, finish = self:span(index)
-  local p = start + RecordHeaderLength
-  local n, previous, before = 0, 0, 0
-  while p < finish do
-    local code = buffer.readu32(source, p)
-    if code == FRMR then
-      if previous == MVRF then return n - 1 end
+  local position = start + RecordHeaderLength
+  local count, previous, before = 0, 0, 0
+  while position < finish do
+    local code = buffer.readu32(source, position)
+    if code == FrmrTag then
+      if previous == MvrfTag then return count - 1 end
 
-      if previous == CNDT and before == MVRF then return n - 2 end
+      if previous == CndtTag and before == MvrfTag then return count - 2 end
 
-      return n
+      return count
     end
 
     before, previous = previous, code
-    n += 1
-    p += SubrecordHeaderLength + buffer.readu32(source, p + 4)
+    count += 1
+    position += SubrecordHeaderLength + buffer.readu32(source, position + 4)
   end
 
-  return n
+  return count
 end
 
 --- Deletes the CELL references at `refs` (0-based) and updates NAM0; returns how many went.
@@ -810,11 +816,11 @@ function Plugin.deleteCellReferences(self: Plugin, index: number, refs: { number
   -- NAM0 counts the (temporary) references after it; it usually sits inside the last persistent
   -- reference's group, and stays when that reference goes.
   local codes = codesOf(self, index)
-  local nam0 = table.find(codes, NAM0)
+  local nam0 = table.find(codes, Nam0Tag)
   local list, header, at = pieces(self, index)
   local dropped: { [number]: boolean } = {}
-  for i, group in groups.references do
-    if not remove[i] then continue end
+  for ordinal, group in groups.references do
+    if not remove[ordinal] then continue end
 
     for sub = group[1] + 1, group[2] + 1 do
       if sub ~= nam0 then dropped[sub] = true end
@@ -823,8 +829,8 @@ function Plugin.deleteCellReferences(self: Plugin, index: number, refs: { number
 
   if nam0 then
     local remaining = 0
-    for i, group in groups.references do
-      if not remove[i] and group[1] + 1 > nam0 then
+    for ordinal, group in groups.references do
+      if not remove[ordinal] and group[1] + 1 > nam0 then
         remaining += 1
       end
     end
@@ -832,12 +838,12 @@ function Plugin.deleteCellReferences(self: Plugin, index: number, refs: { number
     local value = buffer.create(4)
     buffer.writeu32(value, 0, remaining)
     local piece = list[nam0]
-    list[nam0] = newPiece(piece.b, piece.s, value)
+    list[nam0] = newPiece(piece.source, piece.start, value)
   end
 
   local kept = {}
-  for i, piece in list do
-    if not dropped[i] then table.insert(kept, piece) end
+  for ordinal, piece in list do
+    if not dropped[ordinal] then table.insert(kept, piece) end
   end
 
   rebuild(self, index, kept, header, at)
@@ -849,7 +855,7 @@ end
 local function tes3Index(self: Plugin): number
   if #self.starts == 0 then fail(0, 'empty plugin') end
 
-  if self:code(0) ~= TES3 then fail(self:range(0), 'first record is not TES3') end
+  if self:code(0) ~= Tes3Tag then fail(self:range(0), 'first record is not TES3') end
 
   return 0
 end
@@ -864,12 +870,12 @@ local function codeFacts(self: Plugin): (boolean, number)
 
   local save, headers = false, 0
   local source, bodies = self.source, self.bodies
-  for i, start in self.starts do
-    local body = bodies[i]
+  for entry, start in self.starts do
+    local body = bodies[entry]
     local code = if body then buffer.readu32(body, 0) else buffer.readu32(source, start)
-    if code == SAVE then
+    if code == SaveTag then
       save = true
-    elseif code == TES3 then
+    elseif code == Tes3Tag then
       headers += 1
     end
   end
@@ -889,9 +895,9 @@ local function lossyUtf8(text: string): string
   if utf8.len(text) then return text end
 
   local out = {}
-  local i, n = 1, #text
-  while i <= n do
-    local byte = string.byte(text, i)
+  local position, length = 1, #text
+  while position <= length do
+    local byte = string.byte(text, position)
     local width, low, high = 0, 0x80, 0xbf
     if byte < 0x80 then
       width = 1
@@ -915,26 +921,26 @@ local function lossyUtf8(text: string): string
 
     if width == 0 then
       table.insert(out, '\u{FFFD}')
-      i += 1
+      position += 1
       continue
     end
 
     local good = 1
-    for k = 1, width - 1 do
-      local next = string.byte(text, i + k)
-      local from, to = if k == 1 then low else 0x80, if k == 1 then high else 0xbf
+    for offset = 1, width - 1 do
+      local next = string.byte(text, position + offset)
+      local from, to = if offset == 1 then low else 0x80, if offset == 1 then high else 0xbf
       if not next or next < from or next > to then break end
 
       good += 1
     end
 
     if good == width then
-      table.insert(out, string.sub(text, i, i + width - 1))
+      table.insert(out, string.sub(text, position, position + width - 1))
     else
       table.insert(out, '\u{FFFD}')
     end
 
-    i += good
+    position += good
   end
 
   return table.concat(out)
@@ -999,7 +1005,7 @@ end
 --- The `FORM` format version in the TES3 record; 0 without one.
 function Plugin.formatVersion(self: Plugin): number
   tes3Index(self)
-  local source, at, size = self:findSubrecord(0, FORM)
+  local source, at, size = self:findSubrecord(0, FormTag)
   if not source then return 0 end
 
   if size ~= 4 then fail(at, 'FORM payload is not 4 bytes') end
@@ -1009,7 +1015,7 @@ end
 
 local function hedr(self: Plugin): (buffer, number, number)
   tes3Index(self)
-  local source, at, size = self:findSubrecord(0, HEDR)
+  local source, at, size = self:findSubrecord(0, HedrTag)
   if not source then
     local _, start = self:span(0)
     fail(start + RecordHeaderLength, 'TES3 record has no HEDR subrecord')
@@ -1053,13 +1059,14 @@ function Plugin.header(self: Plugin): Header
 
   local author, description, recordCount
   if variable then
-    local a, b = sizedString(source, at, size, HedrAuthorOffset)
-    local c, d = sizedString(source, at, size, b)
-    if d + 4 > size then fail(at + d, 'truncated HEDR record count') end
+    local authorStart, authorEnd = sizedString(source, at, size, HedrAuthorOffset)
+    local descriptionStart, descriptionEnd = sizedString(source, at, size, authorEnd)
+    if descriptionEnd + 4 > size then fail(at + descriptionEnd, 'truncated HEDR record count') end
 
-    author = headerDecode(self, utf, source, at + a, b - a)
-    description = headerDecode(self, utf, source, at + c, d - c)
-    recordCount = buffer.readu32(source, at + d)
+    author = headerDecode(self, utf, source, at + authorStart, authorEnd - authorStart)
+    description =
+      headerDecode(self, utf, source, at + descriptionStart, descriptionEnd - descriptionStart)
+    recordCount = buffer.readu32(source, at + descriptionEnd)
   else
     if size < HedrLength then fail(at, 'HEDR payload is too short') end
 
@@ -1084,18 +1091,18 @@ function Plugin.masters(self: Plugin): { Master }
   local subs = self:subrecords(0)
   local source = self:span(0)
   local out = {}
-  local i = 1
-  while i <= #subs do
-    local sub = subs[i]
-    if sub.code ~= MAST then
-      i += 1
+  local ordinal = 1
+  while ordinal <= #subs do
+    local sub = subs[ordinal]
+    if sub.code ~= MastTag then
+      ordinal += 1
       continue
     end
 
-    local data = subs[i + 1]
+    local data = subs[ordinal + 1]
     if not data then fail(sub.start, 'TES3 MAST subrecord is missing following DATA') end
 
-    if data.code ~= DATA then fail(data.start, 'TES3 MAST subrecord is not followed by DATA') end
+    if data.code ~= DataTag then fail(data.start, 'TES3 MAST subrecord is not followed by DATA') end
 
     if data.size ~= 8 then fail(data.payload, 'TES3 master DATA payload is not 8 bytes') end
 
@@ -1103,10 +1110,10 @@ function Plugin.masters(self: Plugin): { Master }
       name = headerDecode(self, utf, source, sub.payload, sub.size),
       size = buffer.readu32(source, data.payload)
         + buffer.readu32(source, data.payload + 4) * 4294967296,
-      mast = i - 1,
-      data = i,
+      mast = ordinal - 1,
+      data = ordinal,
     })
-    i += 2
+    ordinal += 2
   end
 
   return out
@@ -1117,9 +1124,9 @@ local function updateHedr(self: Plugin, update: (payload: buffer) -> ())
   local payload = buffer.create(size)
   buffer.copy(payload, 0, source, at, size)
   update(payload)
-  for i, sub in self:subrecords(0) do
-    if sub.code == HEDR then
-      self:replaceSubrecord(0, i - 1, payload)
+  for ordinal, sub in self:subrecords(0) do
+    if sub.code == HedrTag then
+      self:replaceSubrecord(0, ordinal - 1, payload)
       return
     end
   end
@@ -1154,8 +1161,8 @@ function Plugin.setMasters(self: Plugin, masters: { { name: string, size: number
   local current = self:masters()
   if #current == #masters then
     local same = true
-    for i, master in current do
-      if master.name ~= masters[i].name or master.size ~= masters[i].size then
+    for ordinal, master in current do
+      if master.name ~= masters[ordinal].name or master.size ~= masters[ordinal].size then
         same = false
         break
       end
@@ -1171,10 +1178,10 @@ function Plugin.setMasters(self: Plugin, masters: { { name: string, size: number
   local names: { string } = {}
   for _, master in masters do
     local found: string? = nil
-    for k, old in current do
-      if kept[k] or old.name ~= master.name then continue end
+    for ordinal, old in current do
+      if kept[ordinal] or old.name ~= master.name then continue end
 
-      kept[k] = true
+      kept[ordinal] = true
       local sub = subs[old.mast + 1]
       found = buffer.readstring(source, sub.payload, sub.size)
       break
@@ -1183,26 +1190,26 @@ function Plugin.setMasters(self: Plugin, masters: { { name: string, size: number
     table.insert(names, found or (headerEncode(self, utf, master.name, 'TES3 MAST', start) .. '\0'))
   end
 
-  local w = Writer.new(buffer.len(source))
+  local writer = Writer.new(buffer.len(source))
   local function push(code: number, data: string)
-    Writer.u32(w, code)
-    Writer.u32(w, #data)
-    Writer.string(w, data)
+    Writer.u32(writer, code)
+    Writer.u32(writer, #data)
+    Writer.string(writer, data)
   end
 
   for _, sub in subs do
-    if sub.code == MAST or sub.code == DATA then continue end
+    if sub.code == MastTag or sub.code == DataTag then continue end
 
     push(sub.code, buffer.readstring(source, sub.payload, sub.size))
-    if sub.code ~= HEDR then continue end
+    if sub.code ~= HedrTag then continue end
 
-    for k, name in names do
-      push(MAST, name)
-      push(DATA, buffer.tostring(u64(masters[k].size)))
+    for ordinal, name in names do
+      push(MastTag, name)
+      push(DataTag, buffer.tostring(u64(masters[ordinal].size)))
     end
   end
 
-  self:replacePayload(0, Writer.finish(w))
+  self:replacePayload(0, Writer.finish(writer))
   return true
 end
 
@@ -1218,11 +1225,11 @@ local function recordCountOffset(
     return HedrRecordCountOffset
   end
 
-  local _, b = sizedString(source, at, size, HedrAuthorOffset)
-  local _, d = sizedString(source, at, size, b)
-  if d + 4 > size then fail(at + d, 'truncated HEDR record count') end
+  local _, authorEnd = sizedString(source, at, size, HedrAuthorOffset)
+  local _, descriptionEnd = sizedString(source, at, size, authorEnd)
+  if descriptionEnd + 4 > size then fail(at + descriptionEnd, 'truncated HEDR record count') end
 
-  return d
+  return descriptionEnd
 end
 
 --- Sets the HEDR record count to the records the plugin holds, header aside; whether it changed.
@@ -1243,7 +1250,7 @@ end
 --- is `'keep'` (a plugin only partly loaded counts what it left out) or there's no TES3 header.
 --- Whether the count changed.
 function Plugin.applyRecordCount(self: Plugin, mode: 'update' | 'keep', changed: boolean): boolean
-  if mode ~= 'update' or not changed or #self.starts == 0 or self:code(0) ~= TES3 then
+  if mode ~= 'update' or not changed or #self.starts == 0 or self:code(0) ~= Tes3Tag then
     return false
   end
 
@@ -1336,12 +1343,12 @@ function Plugin.replaceStrings(
     local piece = list[sub + 1]
     if not piece or sub % 1 ~= 0 then subrecordOutOfBounds(self, index) end
 
-    local size = piece.e - piece.s - SubrecordHeaderLength
-    local nul = size > 0 and buffer.readu8(piece.b, piece.e - 1) == 0
-    local field = `{code} {Tags.display(buffer.readu32(piece.b, piece.s))}`
+    local size = piece.finish - piece.start - SubrecordHeaderLength
+    local nul = size > 0 and buffer.readu8(piece.source, piece.finish - 1) == 0
+    local field = `{code} {Tags.display(buffer.readu32(piece.source, piece.start))}`
     local payload =
-      encodeField(self.encoding, change.value, nul, field, piece.s + SubrecordHeaderLength)
-    list[sub + 1] = newPiece(piece.b, piece.s, asBuffer(payload))
+      encodeField(self.encoding, change.value, nul, field, piece.start + SubrecordHeaderLength)
+    list[sub + 1] = newPiece(piece.source, piece.start, asBuffer(payload))
   end
 
   rebuild(self, index, list, header, at)
@@ -1599,7 +1606,7 @@ for _, tag in { 'MGEF', 'SKIL', 'FILT', 'DBGP', 'LUAL' } do
   Ignore[Tags.code(tag)] = true
 end
 
-local DIAL, INFO = Tags.code 'DIAL', Tags.code 'INFO'
+local DialTag, InfoTag = Tags.code 'DIAL', Tags.code 'INFO'
 
 --- Where a problem in a record is, in the original bytes when it has any.
 local function errorOffset(message: string): (number, string)
@@ -1619,7 +1626,7 @@ function Plugin.validateProfile(self: Plugin, profile: Profile): { Diagnostic }
   local count = #self.starts
   if count == 0 then
     table.insert(out, { offset = 0, message = 'the file has no records, not even a TES3 header' })
-  elseif self:code(0) ~= TES3 then
+  elseif self:code(0) ~= Tes3Tag then
     table.insert(out, {
       offset = (self:range(0)),
       message = `the first record is {Tags.display(self:code(0))}, not the TES3 header`,
@@ -1634,15 +1641,15 @@ function Plugin.validateProfile(self: Plugin, profile: Profile): { Diagnostic }
     end
   end
 
-  for i = 1, count - 1 do
-    if self:code(i) == TES3 then
-      table.insert(out, { offset = (self:range(i)), message = 'a second TES3 header' })
+  for index = 1, count - 1 do
+    if self:code(index) == Tes3Tag then
+      table.insert(out, { offset = (self:range(index)), message = 'a second TES3 header' })
     end
   end
 
-  for i = 0, count - 1 do
-    local code = self:code(i)
-    local start = self:range(i)
+  for index = 0, count - 1 do
+    local code = self:code(index)
+    local start = self:range(index)
     if not Tags.isText(code) then
       local name = Tags.name(code)
       table.insert(out, {
@@ -1655,9 +1662,9 @@ function Plugin.validateProfile(self: Plugin, profile: Profile): { Diagnostic }
       continue
     end
 
-    local dirty = self:isDirty(i)
-    local _, origin = self:range(i)
-    for _, sub in self:subrecords(i) do
+    local dirty = self:isDirty(index)
+    local _, origin = self:range(index)
+    for _, sub in self:subrecords(index) do
       if Tags.isText(sub.code) then continue end
 
       local name = sub.tag
@@ -1672,33 +1679,33 @@ function Plugin.validateProfile(self: Plugin, profile: Profile): { Diagnostic }
   end
 
   if profile == 'tes3' then
-    for i = 0, count - 1 do
-      for _, diagnostic in self:recordProfileDiagnostics(i, 'tes3') do
+    for index = 0, count - 1 do
+      for _, diagnostic in self:recordProfileDiagnostics(index, 'tes3') do
         table.insert(out, diagnostic)
       end
     end
   elseif profile == 'omwaddon' then
     local inDialogue = false
-    for i = 1, count - 1 do
-      local code = self:code(i)
-      if bit32.btest(self:flags(i), FlagIgnored) or code == TES3 then continue end
+    for index = 1, count - 1 do
+      local code = self:code(index)
+      if bit32.btest(self:flags(index), FlagIgnored) or code == Tes3Tag then continue end
 
-      if code == INFO then
+      if code == InfoTag then
         if not inDialogue then
           table.insert(out, {
-            offset = (self:range(i)),
+            offset = (self:range(index)),
             message = 'INFO has no DIAL before it; OpenMW skips it ("info record without dialog")',
           })
         end
       elseif Ignore[code] then
       -- Loaded outside the stores, leaving the current topic alone.
-      elseif code == DIAL then
+      elseif code == DialTag then
         inDialogue = true
       elseif OpenMwLoads[code] then
         inDialogue = false
       else
         table.insert(out, {
-          offset = (self:range(i)),
+          offset = (self:range(index)),
           message = `{Tags.display(code)} isn't a record type OpenMW loads; it refuses the file ("Unknown record")`,
         })
       end
@@ -1770,9 +1777,9 @@ local function new(fileType: FileType?, options: OpenOptions?): Plugin
   buffer.writef32(hedrPayload, 0, 1.3)
   buffer.writeu32(hedrPayload, HedrFileTypeOffset, if fileType == 'master' then 1 else 0)
   local bytes = buffer.create(RecordHeaderLength + SubrecordHeaderLength + HedrLength)
-  buffer.writeu32(bytes, 0, TES3)
+  buffer.writeu32(bytes, 0, Tes3Tag)
   buffer.writeu32(bytes, 4, SubrecordHeaderLength + HedrLength)
-  buffer.writeu32(bytes, RecordHeaderLength, HEDR)
+  buffer.writeu32(bytes, RecordHeaderLength, HedrTag)
   buffer.writeu32(bytes, RecordHeaderLength + 4, HedrLength)
   buffer.copy(bytes, RecordHeaderLength + SubrecordHeaderLength, hedrPayload)
   return parse(bytes, options)
@@ -1807,10 +1814,10 @@ local function checkRoundTrip(bytes: buffer, excluded: { string }?, ignoreCruft:
     skip[Tags.code(tag)] = true
   end
 
-  local function filtered(p: Plugin): string
+  local function filtered(side: Plugin): string
     local parts = {}
-    for i = 0, p:count() - 1 do
-      if not skip[p:code(i)] then table.insert(parts, buffer.tostring(p:bytes(i))) end
+    for index = 0, side:count() - 1 do
+      if not skip[side:code(index)] then table.insert(parts, buffer.tostring(side:bytes(index))) end
     end
 
     return table.concat(parts)
