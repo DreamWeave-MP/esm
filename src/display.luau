@@ -422,6 +422,8 @@ local function display(
   index: number,
   references: { number }?
 ): { [string]: unknown }
+  -- plugin:decode raises on a record the typed model can't read (a truncated subrecord, a tag its
+  -- type doesn't have); the record then shows why, and its subrecords as they are.
   local ok, decoded = pcall(plugin.decode, plugin, index)
   if ok and decoded then
     local value = decoded :: Value
@@ -435,11 +437,11 @@ local function display(
         if not group then continue end
 
         for ordinal = group[1] + 1, group[2] + 1 do
-          if subs[ordinal].tag == 'FRMR' and subs[ordinal].size == 4 then
-            local packed = buffer.readu32(source, subs[ordinal].payload)
-            keep[packed] = true
-            break
-          end
+          if subs[ordinal].tag ~= 'FRMR' or subs[ordinal].size ~= 4 then continue end
+
+          local packed = buffer.readu32(source, subs[ordinal].payload)
+          keep[packed] = true
+          break
         end
       end
 
