@@ -108,7 +108,7 @@ export type RefId =
   | { kind: 'formId', index: number, contentFile: number }
   | { kind: 'generated', high: number, low: number }
   | { kind: 'index', recordType: string, value: number }
-  | { kind: 'exteriorCell', x: number, y: number }
+  | { kind: 'exteriorCell', gridX: number, gridY: number }
 
 --- A whole subrecord payload as one RefId, or nil unless it's exactly one.
 local function decodeRefId(source: buffer, offset: number, length: number): RefId?
@@ -154,8 +154,8 @@ local function decodeRefId(source: buffer, offset: number, length: number): RefI
   elseif kind == 6 then
     return {
       kind = 'exteriorCell',
-      x = buffer.readi32(source, at),
-      y = buffer.readi32(source, at + 4),
+      gridX = buffer.readi32(source, at),
+      gridY = buffer.readi32(source, at + 4),
     }
   end
 
@@ -191,7 +191,7 @@ local function refIdText(id: RefId): string
 
   if id.kind == 'index' then return `{id.recordType}:0x{string.format('%x', id.value)}` end
 
-  return `#{id.x} {id.y}`
+  return `#{id.gridX} {id.gridY}`
 end
 
 --[[ Lua data ]]
