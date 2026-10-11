@@ -429,6 +429,7 @@ local function actorHandlers(handlers: { [string]: Handler }): { [string]: Handl
     table.insert(record.travelDestinations :: { unknown }, value)
     return next
   end
+
   handlers.AI_T = structItem(
     16,
     'aiPackages',
@@ -440,6 +441,7 @@ local function actorHandlers(handlers: { [string]: Handler }): { [string]: Handl
       }
     end
   )
+
   handlers.AI_W = structItem(
     14,
     'aiPackages',
@@ -461,6 +463,7 @@ local function actorHandlers(handlers: { [string]: Handler }): { [string]: Handl
       }
     end
   )
+
   for _, pair in { { 'AI_E', 'Escort' }, { 'AI_F', 'Follow' } } do
     local kind = pair[2]
     handlers[pair[1]] = function(source, position, finish, record, encoding)
