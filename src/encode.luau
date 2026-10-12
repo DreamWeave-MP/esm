@@ -43,13 +43,22 @@ local function merge(default: unknown, value: unknown): unknown
     return value
   end
 
-  local defaultFields = default :: Value
+  -- A copy of the defaults, with each field the value has laid over its own. The value is asked
+  -- for every field a default has, not walked for them: a field it answers for without holding
+  -- (through a metatable) counts, as one it holds and no default has does.
+  local defaultFields, valueFields = default :: Value, value :: Value
   local out = table.clone(defaultFields)
-  for key, field in value :: Value do
-    local fallback = defaultFields[key]
+  for key, fallback in defaultFields do
+    local field = valueFields[key]
+    if field == nil then continue end
+
     out[key] = if type(fallback) == 'table' and type(field) == 'table'
       then merge(fallback, field)
       else field
+  end
+
+  for key, field in valueFields do
+    if defaultFields[key] == nil then out[key] = field end
   end
 
   return out
