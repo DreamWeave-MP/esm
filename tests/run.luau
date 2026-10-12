@@ -598,6 +598,110 @@ suite.describe('typed records', function()
     end
   end)
 
+  --- What encoding a default `name` with `fields` set raises, or `''`.
+  local function refusal(name: string, fields: { [string]: unknown }): string
+    local value = tes3.default(name) :: tes3.Value
+
+    for key, field in fields do
+      value[key] = field
+    end
+
+    -- tes3.encode raises on a value its record type can't hold; what it says is what's checked.
+    local ok, problem = pcall(tes3.encode, value)
+    return if ok then '' else tostring(problem)
+  end
+
+  suite.it('reads flags by name, in hex, and as a number, and names the field of a bad one', function()
+    local function flagsOf(flags: unknown): unknown
+      local value = tes3.default 'Static' :: tes3.Value
+      value.flags = flags
+      local encoded = tes3.encode(value)
+      return (tes3.decode(encoded, 0, buffer.len(encoded), 'win1252') :: tes3.Value).flags
+    end
+
+    expect(flagsOf ' PERSISTENT |BLOCKED|0x40 ').toBe 'PERSISTENT | BLOCKED | 0x40'
+    expect(flagsOf(0x400)).toBe 'PERSISTENT'
+    expect(flagsOf '   ').toBe ''
+    expect(flagsOf '').toBe ''
+
+    -- Each twice: a text read once reads the same the next time, and a bad one is bad again.
+    for _ = 1, 2 do
+      expect(flagsOf 'PERSISTENT | BLOCKED').toBe 'PERSISTENT | BLOCKED'
+      expect(refusal('Static', { flags = 'NOPE' })).toBe 'value.flags: unrecognized named flag `NOPE`'
+    end
+
+    expect(refusal('Static', { flags = 'DELETED | ' })).toBe 'value.flags: encountered empty flag'
+    expect(refusal('Static', { flags = {} })).toBe 'value.flags: expected a flags string, got table'
+    expect(refusal('MiscItem', { data = { flags = 'KEY | NOPE' } })).toBe 'data.flags: unrecognized named flag `NOPE`'
+  end)
+
+  suite.it('names the field of a variant no enum has', function()
+    local variants = 'expected one of Greeting, Journal, Persuasion, Topic, Voice'
+    expect(refusal('Dialogue', { dialogueType = 'Chat' })).toBe(
+      `value.dialogueType: unknown variant 'Chat', {variants}`
+    )
+    expect(refusal('Dialogue', { dialogueType = 3 })).toBe(
+      `value.dialogueType: unknown variant '3', {variants}`
+    )
+    expect(refusal('Dialogue', { dialogueType = 'Journal' })).toBe ''
+    expect(refusal('Class', { data = { major3 = 'Flying' } })).toBe(
+      'data.major3: unknown variant \'Flying\', expected one of Acrobatics, Alchemy, Alteration, '
+        .. 'Armorer, Athletics, Axe, Block, BluntWeapon, Conjuration, Destruction, Enchant, '
+        .. 'HandToHand, HeavyArmor, Illusion, LightArmor, LongBlade, Marksman, MediumArmor, '
+        .. 'Mercantile, Mysticism, None, Restoration, Security, ShortBlade, Sneak, Spear, '
+        .. 'Speechcraft, Unarmored'
+    )
+  end)
+
+  suite.it('names the reference and the field of one it can\'t write', function()
+    local function reference(fields: { [string]: unknown }): tes3.Value
+      local value: tes3.Value = {
+        id = 'a',
+        mastIndex = 0,
+        refrIndex = 1,
+        temporary = false,
+        translation = { 0, 0, 0 },
+        rotation = { 0, 0, 0 },
+      }
+
+      for key, field in fields do
+        value[key] = if field == 'none' then nil else field
+      end
+
+      return value
+    end
+
+    local function refused(...: tes3.Value): string return refusal('Cell', { references = { ... } }) end
+
+    expect(refused(reference { translation = { 1, 'x', 3 } })).toBe 'references[1].translation[2]: expected number, got string'
+    expect(refused(reference {}, reference { refrIndex = 2, rotation = 'none' })).toBe 'references[2].rotation: expected list, got nil'
+    expect(refused(reference { rotation = { 0, 0 } })).toBe 'references[1].rotation[3]: expected number, got nil'
+    expect(refused(reference { mastIndex = 'none' })).toBe 'references[1].mastIndex: expected number, got nil'
+    expect(refused(reference { refrIndex = 'seven' })).toBe 'references[1].refrIndex: expected number, got string'
+    expect(refused(reference { id = 7 })).toBe 'references[1].id: expected string, got number'
+    expect(refused(reference { destination = { translation = {}, rotation = { 0, 0, 0 }, cell = '' } })).toBe 'references[1].destination.translation[1]: expected number, got nil'
+    expect(refused(reference { destination = { translation = { 0, 0, 0 }, rotation = { 0, 0 }, cell = '' } })).toBe 'references[1].destination.rotation[3]: expected number, got nil'
+    expect(refused(reference { destination = { rotation = { 0, 0, 0 }, cell = '' } })).toBe 'references[1].translation: expected list, got nil'
+    expect(refusal('Npc', {
+      travelDestinations = { { translation = { 0, 0 }, rotation = { 0, 0, 0 }, cell = '' } },
+    })).toBe 'travelDestinations[1].translation[3]: expected number, got nil'
+
+    expect(refusal('Npc', {
+      aiPackages = { { type = 'Travel', location = { 0, 'x', 0 }, reset = 0 } },
+    })).toBe 'aiPackages[1][2]: expected number, got string'
+  end)
+
+  suite.it('refuses text its code page lacks, and takes text it has', function()
+    expect(refusal('Static', { id = 'Ж' })).toBe 'encode error: Ж'
+    local value = tes3.default 'Static' :: tes3.Value
+    value.id = 'caf\u{e9}'
+    expect(buffer.tostring(tes3.encode(value))).toBe(record('STAT', subrecord('NAME', 'caf\xe9\0')))
+    value.id = 'Ж'
+    expect(buffer.tostring(tes3.encode(value, 'win1251'))).toBe(
+      record('STAT', subrecord('NAME', '\xc6\0'))
+    )
+  end)
+
   suite.it('writes back only the subrecords an edit changed', function()
     -- No NUL after the name: an encoding would add one, but an untouched NAME keeps its bytes.
     local bytes = record(
