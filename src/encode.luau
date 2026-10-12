@@ -1523,11 +1523,12 @@ end
 local function freeze(value: unknown): unknown
   if type(value) ~= 'table' then return value end
 
-  for _, member in value :: { [unknown]: unknown } do
+  local members = value :: { [unknown]: unknown }
+  for _, member in members do
     freeze(member)
   end
 
-  return table.freeze(value)
+  return table.freeze(members)
 end
 
 --- Each record type's default value, made the first time one is encoded and frozen: `merge`
