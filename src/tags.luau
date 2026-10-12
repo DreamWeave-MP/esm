@@ -37,8 +37,21 @@ local function name(tag: number): string
   return text
 end
 
+--- Whether every byte of the tag is printable ASCII or a space.
+local function isText(tag: number): boolean
+  for index = 0, 3 do
+    local byte = bit32.extract(tag, index * 8, 8)
+    if byte < 0x20 or byte > 0x7e then return false end
+  end
+
+  return true
+end
+
 --- A tag as jess displays one: printable ASCII as is, every other byte as `\xNN`.
 local function display(tag: number): string
+  -- Nearly every tag is text, and displays as the string it is.
+  if isText(tag) then return name(tag) end
+
   local out = ''
   for index = 0, 3 do
     local byte = bit32.extract(tag, index * 8, 8)
@@ -50,16 +63,6 @@ local function display(tag: number): string
   end
 
   return out
-end
-
---- Whether every byte of the tag is printable ASCII or a space.
-local function isText(tag: number): boolean
-  for index = 0, 3 do
-    local byte = bit32.extract(tag, index * 8, 8)
-    if byte < 0x20 or byte > 0x7e then return false end
-  end
-
-  return true
 end
 
 --- A tag's bytes as Rust's `to_str_lossy` shows them: invalid UTF-8 as U+FFFD.
