@@ -131,7 +131,8 @@ end
 
 --- `text` in the code page, or nil and the character it lacks. NUL is the caller's to refuse.
 local function encode(text: string, encoding: string): (string?, string?)
-  if not string.find(text, '[\128-\255]') then return text, nil end
+  -- ASCII is itself in every code page, and is the only text with a character to each byte.
+  if utf8.len(text) == #text then return text, nil end
 
   -- bytes.encode throws on a character the code page lacks.
   local ok, encoded = pcall(bytes.encode, text, label(encoding))
