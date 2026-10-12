@@ -177,7 +177,7 @@ local function cellParts(subs: { Sub }): CellParts?
   end
 
   local parts: CellParts =
-    { header = table.move(subs, 1, headerEnd - 1, 1, {}), references = {}, nam0 = nil }
+    { header = subs[1:headerEnd - 1], references = {}, nam0 = nil }
   local temporary = false
   local pending: { string } = {}
   local currentKey: number? = nil
