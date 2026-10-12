@@ -1101,6 +1101,30 @@ Encoders.LeveledCreature =
 
 local persistent = References.persistent
 
+--- The three f32s of the list `from[key]`, which `path` and then `within` lead to. A reference
+--- has two, and a cell thousands of references: their names are built only to refuse one.
+local function vector(writer: Writer, from: Value, key: string, path: string, within: string)
+  local items = listOf(from, key, path)
+  local first, second, third = items[1], items[2], items[3]
+  if type(first) == 'number' and type(second) == 'number' and type(third) == 'number' then
+    Writer.f32(writer, first)
+    Writer.f32(writer, second)
+    Writer.f32(writer, third)
+    return
+  end
+
+  f32s(writer, items, 3, `{path}{within}.{key}`)
+end
+
+--- `ref[key]`, its master or its index, as a number; `position` is where it is in the value's
+--- list, and names it only to refuse it.
+local function indexOf(ref: Value, key: string, position: number): number
+  local value = ref[key]
+  if type(value) == 'number' then return value end
+
+  return numberOf(ref, key, `references[{position}]`)
+end
+
 local function reference(writer: Writer, ref: Value, encoding: string, path: string)
   sub(writer, 'NAME', stringOf(ref, 'id', path), encoding)
   local blocked = ref.blocked :: number?
@@ -1118,10 +1142,12 @@ local function reference(writer: Writer, ref: Value, encoding: string, path: str
     end
   end
 
-  for _, pair in { { 'ANAM', 'owner' }, { 'BNAM', 'ownerGlobal' }, { 'CNAM', 'ownerFaction' } } do
-    local value = ref[pair[2]] :: string?
-    if value then sub(writer, pair[1], value, encoding) end
-  end
+  local {owner, ownerGlobal, ownerFaction} = ref
+  if owner then sub(writer, 'ANAM', owner :: string, encoding) end
+
+  if ownerGlobal then sub(writer, 'BNAM', ownerGlobal :: string, encoding) end
+
+  if ownerFaction then sub(writer, 'CNAM', ownerFaction :: string, encoding) end
 
   local rank = ref.ownerFactionRank :: number?
   if rank then
@@ -1153,8 +1179,8 @@ local function reference(writer: Writer, ref: Value, encoding: string, path: str
   local destination = ref.destination :: Value?
   if destination then
     header(writer, 'DODT', 24)
-    f32s(writer, listOf(destination, 'translation', path), 3, `{path}.destination.translation`)
-    f32s(writer, listOf(destination, 'rotation', path), 3, `{path}.destination.rotation`)
+    vector(writer, destination, 'translation', path, '.destination')
+    vector(writer, destination, 'rotation', path, '.destination')
     opt(writer, 'DNAM', stringOf(destination, 'cell', path), encoding)
   end
 
@@ -1164,18 +1190,18 @@ local function reference(writer: Writer, ref: Value, encoding: string, path: str
     Writer.i32(writer, lock)
   end
 
-  for _, pair in { { 'KNAM', 'key' }, { 'TNAM', 'trap' } } do
-    local value = ref[pair[2]] :: string?
-    if value then sub(writer, pair[1], value, encoding) end
-  end
+  local {key, trap} = ref
+  if key then sub(writer, 'KNAM', key :: string, encoding) end
+
+  if trap then sub(writer, 'TNAM', trap :: string, encoding) end
 
   if ref.deleted ~= nil then
     header(writer, 'DELE', 4)
     Writer.u32(writer, 0)
   else
     header(writer, 'DATA', 24)
-    f32s(writer, listOf(ref, 'translation', path), 3, `{path}.translation`)
-    f32s(writer, listOf(ref, 'rotation', path), 3, `{path}.rotation`)
+    vector(writer, ref, 'translation', path, '')
+    vector(writer, ref, 'rotation', path, '')
   end
 end
 
@@ -1224,8 +1250,7 @@ Encoders.Cell = function(writer, record, encoding, bits)
   local byKey: { [number]: Value } = {}
   for index, item in listOf(record, 'references', 'value') do
     local ref = item :: Value
-    local path = `references[{index}]`
-    byKey[numberOf(ref, 'mastIndex', path) * 16777216 + numberOf(ref, 'refrIndex', path)] = ref
+    byKey[indexOf(ref, 'mastIndex', index) * 16777216 + indexOf(ref, 'refrIndex', index)] = ref
   end
 
   local sorted = References.ordered(byKey)
