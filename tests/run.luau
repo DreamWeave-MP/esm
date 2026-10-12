@@ -386,6 +386,116 @@ suite.describe('CELL references', function()
     expect(buffer.readu32(source, subs[2].payload)).toBe(1)
     expect(buffer.readstring(source, subs[4].payload, subs[4].size)).toBe 'second_ref'
   end)
+
+  --- The ids of an encoded CELL's references, in the order they were written.
+  local function writtenIds(encoded: buffer): { string }
+    local plugin = tes3.open(encoded)
+    local source = plugin:span(0)
+    local ids = {}
+    local reference = false
+
+    for _, sub in plugin:subrecords(0) do
+      if sub.tag == 'NAME' and reference then
+        table.insert(ids, buffer.readstring(source, sub.payload, sub.size - 1))
+      end
+
+      reference = sub.tag == 'FRMR'
+    end
+
+    return ids
+  end
+
+  suite.it('keeps references persistent first, by master with its own last, then by index', function()
+    local function reference(master: number, index: number): string
+      return subrecord('FRMR', u32(master * 16777216 + index))
+        .. subrecord('NAME', `m{master}i{index}\0`)
+        .. subrecord('DATA', string.rep('\0', 24))
+    end
+
+    local bytes = record(
+      'CELL',
+      subrecord('NAME', 'cell\0')
+        .. subrecord('DATA', string.rep('\0', 12))
+        .. reference(0, 9)
+        .. reference(2, 5)
+        .. reference(0, 3)
+        .. reference(1, 700)
+        .. reference(255, 16777215)
+        .. nam0(4)
+        .. reference(0, 2)
+        .. reference(255, 1)
+        .. reference(1, 4)
+        .. reference(0, 1)
+    )
+    local value = open(bytes):decode(0) :: any
+    local ids = {}
+
+    for _, entry in value.references do
+      table.insert(ids, entry.id)
+    end
+
+    local order =
+      { 'm1i700', 'm2i5', 'm255i16777215', 'm0i3', 'm0i9', 'm1i4', 'm255i1', 'm0i1', 'm0i2' }
+    expect(ids).toEqual(order)
+    expect(writtenIds(tes3.encode(value))).toEqual(order)
+  end)
+
+  suite.it('orders references whose master or index no FRMR holds by the same rule', function()
+    local function reference(master: number, index: number, temporary: boolean): tes3.Value
+      return {
+        id = `m{master}i{index}`,
+        mastIndex = master,
+        refrIndex = index,
+        temporary = temporary,
+        translation = { 0, 0, 0 },
+        rotation = { 0, 0, 0 },
+      }
+    end
+
+    local value = tes3.default 'Cell' :: tes3.Value
+    value.references = {
+      reference(0, 0.5, false),
+      reference(300, 2, false),
+      reference(1, 16777300, false),
+      reference(0, 3, true),
+      reference(2, 1, false),
+      reference(1.5, 1, true),
+      reference(0, 2, false),
+    }
+
+    expect(writtenIds(tes3.encode(value))).toEqual {
+      'm1i16777300',
+      'm2i1',
+      'm300i2',
+      'm0i0.5',
+      'm0i2',
+      'm1.5i1',
+      'm0i3',
+    }
+  end)
+
+  suite.it('keeps the later of two references with one master and index', function()
+    local value = tes3.default 'Cell' :: tes3.Value
+    value.references = {
+      {
+        id = 'first',
+        mastIndex = 1,
+        refrIndex = 7,
+        temporary = false,
+        translation = { 0, 0, 0 },
+        rotation = { 0, 0, 0 },
+      },
+      {
+        id = 'second',
+        mastIndex = 1,
+        refrIndex = 7,
+        temporary = false,
+        translation = { 0, 0, 0 },
+        rotation = { 0, 0, 0 },
+      },
+    }
+    expect(writtenIds(tes3.encode(value))).toEqual { 'second' }
+  end)
 end)
 
 suite.describe('profiles', function()
