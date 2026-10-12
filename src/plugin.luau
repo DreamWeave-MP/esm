@@ -386,19 +386,28 @@ end
 --- Record `index`'s subrecords, in order.
 function Plugin.subrecords(self: Plugin, index: number): { Subrecord }
   local source, start, finish = self:span(index)
-  local out = {}
-  local position = start + RecordHeaderLength
+  local first = start + RecordHeaderLength
+  -- Counted first, so the list is made at its size: growing it one subrecord at a time cost
+  -- more than walking the record twice.
+  local count, position = 0, first
   while position < finish do
+    count += 1
+    position += SubrecordHeaderLength + buffer.readu32(source, position + 4)
+  end
+
+  local out: { Subrecord } = table.create(count)
+  position = first
+  for ordinal = 1, count do
     local tag = buffer.readu32(source, position)
     local size = buffer.readu32(source, position + 4)
-    table.insert(out, {
+    out[ordinal] = {
       tag = Tags.name(tag),
       code = tag,
       size = size,
       start = position,
       payload = position + SubrecordHeaderLength,
       finish = position + SubrecordHeaderLength + size,
-    })
+    }
     position += SubrecordHeaderLength + size
   end
 
