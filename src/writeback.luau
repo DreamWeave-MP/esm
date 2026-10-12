@@ -49,19 +49,23 @@ local function split(payload: string): { Sub }?
 end
 
 --- For each element of `left`, the index of the `right` element it's paired with, by the
---- highest-scoring order-preserving alignment (0 for none); `score` is nil for pairs that can't
---- match.
-local function align(left: { Sub }, right: { Sub }, score: (Sub, Sub) -> number?): { number }
+--- highest-scoring order-preserving alignment (0 for none). A pair with the same bytes scores
+--- `same`; one with only the same tag scores `alike`, or can't match when that's 0.
+local function align(left: { Sub }, right: { Sub }, same: number, alike: number): { number }
   local rows, columns = #left, #right
   local width = columns + 1
   local scores: { number } = table.create((rows + 1) * width, 0)
   local function at(row: number, column: number): number return row * width + column + 1 end
 
+  -- The score of pairing a row with a column is worked out here, not by a function handed in:
+  -- there's a pair to every row and column, and the call was most of a write-back.
   for row = rows - 1, 0, -1 do
+    local {tag, bytes} = left[row + 1]
     for column = columns - 1, 0, -1 do
+      local other = right[column + 1]
       local skip = math.max(scores[at(row + 1, column)], scores[at(row, column + 1)])
-      local pairScore = score(left[row + 1], right[column + 1])
-      local take = if pairScore then pairScore + scores[at(row + 1, column + 1)] else 0
+      local pairScore = if bytes == other.bytes then same elseif tag == other.tag then alike else 0
+      local take = if pairScore > 0 then pairScore + scores[at(row + 1, column + 1)] else 0
       scores[at(row, column)] = math.max(skip, take)
     end
   end
@@ -70,8 +74,12 @@ local function align(left: { Sub }, right: { Sub }, score: (Sub, Sub) -> number?
   local row, column = 0, 0
   while row < rows and column < columns do
     local current = scores[at(row, column)]
-    local pairScore = score(left[row + 1], right[column + 1])
-    if pairScore and current == pairScore + scores[at(row + 1, column + 1)] then
+    local one, other = left[row + 1], right[column + 1]
+    local pairScore = if one.bytes == other.bytes
+      then same
+      elseif one.tag == other.tag then alike
+      else 0
+    if pairScore > 0 and current == pairScore + scores[at(row + 1, column + 1)] then
       pairs[row + 1] = column + 1
       row += 1
       column += 1
@@ -90,15 +98,8 @@ end
 --- Original subrecords the encoding doesn't produce are kept unless a changed subrecord of the
 --- same tag replaces them.
 local function mergeSubrecords(original: { Sub }, old: { Sub }, new: { Sub }): string
-  local oldToOriginal = align(old, original, function(left, right)
-    if left.bytes == right.bytes then return 2 end
-
-    return if left.tag == right.tag then 1 else nil
-  end)
-
-  local newToOld = align(new, old, function(left, right)
-    return if left.bytes == right.bytes then 1 else nil
-  end)
+  local oldToOriginal = align(old, original, 2, 1)
+  local newToOld = align(new, old, 1, 0)
   local aligned: { [number]: boolean } = {}
   for _, index in oldToOriginal do
     if index > 0 then aligned[index] = true end
