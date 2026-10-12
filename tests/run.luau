@@ -172,8 +172,13 @@ suite.describe('editing', function()
         subrecord('NAME', 'id') .. subrecord('FNAM', 'display') .. subrecord('FNAM', 'other')
       )
     )
+    expect(plugin:deleteSubrecordsByTag(0, 'ZZZZ')).toBe(0)
+    expect(plugin:isDirty(0)).toBe(false)
     expect(plugin:deleteSubrecordsByTag(0, 'FNAM')).toBe(2)
+    expect(plugin:isDirty(0)).toBe(true)
     expect(tags(open(saved(plugin)), 0)).toEqual { 'NAME' }
+    expect(plugin:deleteSubrecordsByTag(0, 'FNAM')).toBe(0)
+    expect(function() plugin:deleteSubrecordsByTag(1, 'FNAM') end).toThrow 'record index out of bounds'
   end)
 
   suite.it('inserts records where asked and keeps the rest', function()
