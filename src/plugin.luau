@@ -1558,6 +1558,46 @@ local function isOpenMwSubrecord(record: string, sub: string): boolean
   return false
 end
 
+--- Where a problem with the subrecord at `position` of record `index`'s bytes is: there, or where
+--- the record ends when it was edited, and has no bytes of its own in the file.
+local function subrecordOffset(self: Plugin, index: number, position: number): number
+  if not self:isDirty(index) then return position end
+
+  local _, origin = self:range(index)
+  return origin
+end
+
+--- Adds record `index`'s vanilla-format problems to `out`. It reads the subrecords' tags where
+--- they are: a plugin is checked a record at a time, and nearly every one has nothing to say.
+local function vanillaDiagnostics(self: Plugin, index: number, out: { Diagnostic })
+  local code = self:code(index)
+  local allowed = VanillaSets[code]
+  if not allowed then
+    local what = if OpenMwRecords[code]
+      then 'is an OpenMW-only record type'
+      else 'is not a Morrowind record type'
+    table.insert(out, { offset = (self:range(index)), message = `{Tags.display(code)} {what}` })
+    return
+  end
+
+  local source, start, finish = self:span(index)
+  local position = start + RecordHeaderLength
+  while position < finish do
+    local sub = buffer.readu32(source, position)
+    if not allowed[sub] then
+      local what = if isOpenMwSubrecord(Tags.name(code), Tags.name(sub))
+        then 'is an OpenMW extension'
+        else 'is not part of the Morrowind format'
+      table.insert(out, {
+        offset = subrecordOffset(self, index, position),
+        message = `{Tags.display(code)}.{Tags.display(sub)} {what}`,
+      })
+    end
+
+    position += SubrecordHeaderLength + buffer.readu32(source, position + 4)
+  end
+end
+
 --- Vanilla-format problems in one record: an OpenMW-only or unknown record type, or subrecords
 --- the original format doesn't have.
 function Plugin.recordProfileDiagnostics(
@@ -1565,30 +1605,8 @@ function Plugin.recordProfileDiagnostics(
   index: number,
   profile: Profile
 ): { Diagnostic }
-  if profile ~= 'tes3' then return {} end
-
-  local code = self:code(index)
-  local allowed = VanillaSets[code]
-  local display = Tags.display(code)
-  if not allowed then
-    local what = if OpenMwRecords[code]
-      then 'is an OpenMW-only record type'
-      else 'is not a Morrowind record type'
-    return { { offset = (self:range(index)), message = `{display} {what}` } }
-  end
-
-  local out = {}
-  local dirty = self:isDirty(index)
-  local _, origin = self:range(index)
-  for _, sub in self:subrecords(index) do
-    if allowed[sub.code] then continue end
-
-    local what = if isOpenMwSubrecord(Tags.name(code), sub.tag)
-      then 'is an OpenMW extension'
-      else 'is not part of the Morrowind format'
-    local offset = if dirty then origin else sub.start
-    table.insert(out, { offset = offset, message = `{display}.{Tags.display(sub.code)} {what}` })
-  end
+  local out: { Diagnostic } = {}
+  if profile == 'tes3' then vanillaDiagnostics(self, index, out) end
 
   return out
 end
@@ -1673,27 +1691,28 @@ function Plugin.validateProfile(self: Plugin, profile: Profile): { Diagnostic }
       continue
     end
 
-    local dirty = self:isDirty(index)
-    local _, origin = self:range(index)
-    for _, sub in self:subrecords(index) do
-      if Tags.isText(sub.code) then continue end
+    local source, first, finish = self:span(index)
+    local position = first + RecordHeaderLength
+    while position < finish do
+      local sub = buffer.readu32(source, position)
+      if not Tags.isText(sub) then
+        local name = Tags.name(sub)
+        table.insert(out, {
+          offset = subrecordOffset(self, index, position),
+          message = `{Tags.display(code)} subrecord type [{string.byte(name, 1)}, {string.byte(
+            name,
+            2
+          )}, {string.byte(name, 3)}, {string.byte(name, 4)}] isn't text; the record is damaged here`,
+        })
+      end
 
-      local name = sub.tag
-      table.insert(out, {
-        offset = if dirty then origin else sub.start,
-        message = `{Tags.display(code)} subrecord type [{string.byte(name, 1)}, {string.byte(
-          name,
-          2
-        )}, {string.byte(name, 3)}, {string.byte(name, 4)}] isn't text; the record is damaged here`,
-      })
+      position += SubrecordHeaderLength + buffer.readu32(source, position + 4)
     end
   end
 
   if profile == 'tes3' then
     for index = 0, count - 1 do
-      for _, diagnostic in self:recordProfileDiagnostics(index, 'tes3') do
-        table.insert(out, diagnostic)
-      end
+      vanillaDiagnostics(self, index, out)
     end
   elseif profile == 'omwaddon' then
     local inDialogue = false
