@@ -199,7 +199,6 @@ local function parse(source: buffer, options: OpenOptions?): Plugin
   local length = buffer.len(source)
   if length >= 4294967295 then fail(0, 'plugin is 4 GiB or larger') end
 
-  local starts: { number }, bodies: { buffer | false }, parts: { number } = {}, {}, {}
   if not keep then
     -- Every record and subrecord framed in one native walk; its problems read as the walk below
     -- words them.
@@ -209,10 +208,10 @@ local function parse(source: buffer, options: OpenOptions?): Plugin
       inner = { header = SubrecordHeaderLength, lengthAt = 4 },
     })
 
-    for entry = 1, framed do
-      starts[entry], bodies[entry], parts[entry] = buffer.readu32(spans, (entry - 1) * 8), false, 3
-    end
-
+    -- A span is a start and an end, and a record's start is all that's kept of it.
+    local starts: { number } = [for start in spans[1:framed, 'u32@8'] => start]
+    local bodies: { buffer | false } = table.create(framed, false)
+    local parts: { number } = table.create(framed, 3)
     if problem then
       local where = at :: number
       if problem == 'truncated' then fail(where, 'truncated record header') end
@@ -239,6 +238,7 @@ local function parse(source: buffer, options: OpenOptions?): Plugin
     )
   end
 
+  local starts: { number }, bodies: { buffer | false }, parts: { number } = {}, {}, {}
   local count, position = 0, 0
   while position < length do
     if position + RecordHeaderLength > length then fail(position, 'truncated record header') end
