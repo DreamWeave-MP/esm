@@ -785,6 +785,13 @@ suite.describe('typed records', function()
     })).toBe 'aiPackages[1][2]: expected number, got string'
   end)
 
+  suite.it('takes a field a value answers for through a metatable', function()
+    local value = setmetatable({ type = 'Static' }, { __index = { id = 'kept', mesh = 'm.nif' } })
+    expect(buffer.tostring(tes3.encode(value :: tes3.Value))).toBe(
+      record('STAT', subrecord('NAME', 'kept\0') .. subrecord('MODL', 'm.nif\0'))
+    )
+  end)
+
   suite.it('refuses text its code page lacks, and takes text it has', function()
     expect(refusal('Static', { id = 'Ж' })).toBe 'encode error: Ж'
     local value = tes3.default 'Static' :: tes3.Value
