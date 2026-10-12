@@ -31,17 +31,22 @@ local function u32(text: string, at: number): number
   return (string.unpack('<I4', text, at)) :: number
 end
 
-local function split(payload: string): { Sub }?
+--- The subrecords `text` holds from byte `from` (0-based) to its end, or nil when they don't
+--- fit it.
+local function split(text: string, from: number): { Sub }?
+  local source = buffer.fromstring(text)
   local out: { Sub } = {}
-  local position, length = 1, #payload
-  while position <= length do
-    if position + 7 > length then return nil end
+  local position, length = from, #text
+  while position < length do
+    if position + 8 > length then return nil end
 
-    local tag, size = u32(payload, position), u32(payload, position + 4)
-    local finish = position + 8 + size
-    if finish - 1 > length then return nil end
+    local finish = position + 8 + buffer.readu32(source, position + 4)
+    if finish > length then return nil end
 
-    table.insert(out, { tag = tag, bytes = string.sub(payload, position, finish - 1) })
+    table.insert(out, {
+      tag = buffer.readu32(source, position),
+      bytes = buffer.readstring(source, position, finish - position),
+    })
     position = finish
   end
 
@@ -247,7 +252,8 @@ local function mergeCell(original: { Sub }, old: { Sub }, new: { Sub }): string?
       bytes = ref.bytes
     elseif oldBytes then
       -- Within a changed reference, only its changed subrecords take the new encoding.
-      local originalSubs, oldSubs, newSubs = split(ref.bytes), split(oldBytes), split(changed.bytes)
+      local originalSubs, oldSubs, newSubs =
+        split(ref.bytes, 0), split(oldBytes, 0), split(changed.bytes, 0)
       if not originalSubs or not oldSubs or not newSubs then return nil end
 
       bytes = mergeSubrecords(originalSubs, oldSubs, newSubs)
@@ -291,9 +297,7 @@ end
 
 local function merge(original: string, oldEncoded: string, newEncoded: string): string?
   local originalSubs, oldSubs, newSubs =
-    split(string.sub(original, 17)),
-    split(string.sub(oldEncoded, 17)),
-    split(string.sub(newEncoded, 17))
+    split(original, 16), split(oldEncoded, 16), split(newEncoded, 16)
   if not originalSubs or not oldSubs or not newSubs then return nil end
 
   local payload: string?
