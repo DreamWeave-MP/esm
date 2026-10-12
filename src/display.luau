@@ -251,13 +251,7 @@ luaValue = function(value: LuaValue, keepKeys: boolean?): unknown
   if kind == 'table' then
     local entries = value.entries or {}
     local list = #entries > 0
-    for position, entry in entries do
-      if listIndex(entry.key) ~= position then
-        list = false
-        break
-      end
-    end
-
+      and all[for position, entry in enumerate(entries) => listIndex(entry.key) == position]
     if list then
       local out = table.create(#entries)
       for index, entry in entries do
@@ -285,12 +279,7 @@ luaValue = function(value: LuaValue, keepKeys: boolean?): unknown
   if kind == 'object' then return { object = refnum(value.ref :: LuaRef, keepKeys) } end
 
   if kind == 'objectList' then
-    local out = {}
-    for _, ref in value.refs or {} do
-      table.insert(out, refnum(ref, keepKeys))
-    end
-
-    return { objlist = out }
+    return { objlist = [for ref in value.refs or {} => refnum(ref, keepKeys)] }
   end
 
   if kind == 'userdata' then
@@ -466,22 +455,18 @@ local function display(
         end
       end
 
-      local kept = {}
-      for _, ref in value.references :: { Value } do
-        local packed = (ref.mastIndex :: number) * 16777216 + (ref.refrIndex :: number)
-        if keep[packed] then table.insert(kept, ref) end
-      end
-
-      value.references = kept
+      value.references = [
+        for ref in value.references :: { Value }
+        if keep[(ref.mastIndex :: number) * 16777216 + (ref.refrIndex :: number)]
+        => ref
+      ]
     end
 
     return recordValue(plugin, index, value)
   end
 
-  local subrecords = {}
-  for _, sub in plugin:subrecords(index) do
-    table.insert(subrecords, `{Tags.display(sub.code)} ({sub.size} bytes)`)
-  end
+  local subrecords =
+    [for {code, size} in plugin:subrecords(index) => `{Tags.display(code)} ({size} bytes)`]
 
   local id = Records.id(plugin, index)
   return tidy {
