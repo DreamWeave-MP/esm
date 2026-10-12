@@ -340,6 +340,35 @@ suite.describe('the TES3 header', function()
     expect(function() missing:masters() end).toThrow 'TES3 MAST subrecord is missing following DATA'
   end)
 
+  suite.it('leaves masters that are as asked, and sets ones whose name or size differs', function()
+    local function master(name: string, size: number): string
+      return subrecord('MAST', name .. '\0') .. subrecord('DATA', string.pack('<I8', size))
+    end
+
+    local function header(...: string): string
+      return record('TES3', hedr(0, '', '', 0) .. table.concat { ... })
+    end
+
+    local bytes = header(master('a.esm', 1), master('b.esm', 2))
+    local plugin = open(bytes)
+    expect(plugin:setMasters { { name = 'a.esm', size = 1 }, { name = 'b.esm', size = 2 } }).toBe(false)
+    expect(plugin:isDirty(0)).toBe(false)
+    expect(saved(plugin)).toBe(bytes)
+
+    -- The last master's size alone, then its name alone.
+    expect(plugin:setMasters { { name = 'a.esm', size = 1 }, { name = 'b.esm', size = 3 } }).toBe(true)
+    expect(saved(plugin)).toBe(header(master('a.esm', 1), master('b.esm', 3)))
+    expect(plugin:setMasters { { name = 'a.esm', size = 1 }, { name = 'c.esm', size = 3 } }).toBe(true)
+    expect(saved(plugin)).toBe(header(master('a.esm', 1), master('c.esm', 3)))
+    expect(plugin:setMasters { { name = 'a.esm', size = 1 }, { name = 'c.esm', size = 3 } }).toBe(false)
+
+    expect(plugin:setMasters { { name = 'a.esm', size = 1 } }).toBe(true)
+    expect(saved(plugin)).toBe(header(master('a.esm', 1)))
+    expect(plugin:setMasters {}).toBe(true)
+    expect(plugin:setMasters {}).toBe(false)
+    expect(tags(plugin, 0)).toEqual { 'HEDR' }
+  end)
+
   suite.it('builds an empty plugin', function()
     local plugin = tes3.new 'master'
     expect(plugin:header()).toEqual {
