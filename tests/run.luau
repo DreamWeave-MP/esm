@@ -1393,6 +1393,70 @@ suite.describe('record metadata', function()
     plugin:set(0, value)
     expect(tes3.records.headerFlags(plugin, 0).value).toBe(0x2400)
   end)
+
+  suite.it('lists object keys by type and then id, each once', function()
+    local plugin = open(
+      record('TES3', hedr(0, '', '', 0))
+        .. record('STAT', subrecord('NAME', 'b\0'))
+        .. record('MISC', subrecord('NAME', 'z\0'))
+        .. record('STAT', subrecord('NAME', 'a\0'))
+        .. record('STAT', subrecord('NAME', 'b\0'))
+        .. record('STAT', subrecord('NAME', 'B\0'))
+        .. record('STAT', subrecord('NAME', 'ab\0'))
+        .. record('STAT', subrecord('NAME', '\0'))
+        .. record('ABC\\', subrecord('NAME', 'x\0'))
+        .. record('ABC\1', subrecord('NAME', 'a\0'))
+        .. record('INFO', subrecord('INAM', '10\0'))
+        .. record('INFO', subrecord('INAM', '9\0'))
+        .. record('STAT', '')
+    )
+    expect(tes3.records.objectKeys(plugin)).toEqual {
+      { type = 'ABC\\', id = 'x' },
+      { type = 'ABC\\x01', id = 'a' },
+      { type = 'INFO', id = '10' },
+      { type = 'INFO', id = '9' },
+      { type = 'MISC', id = 'z' },
+      { type = 'STAT', id = '' },
+      { type = 'STAT', id = 'B' },
+      { type = 'STAT', id = 'a' },
+      { type = 'STAT', id = 'ab' },
+      { type = 'STAT', id = 'b' },
+    }
+  end)
+
+  suite.it('gives a record\'s string fields where they are, and its first id', function()
+    local plugin = open(
+      record(
+        'INFO',
+        subrecord('DATA', string.rep('\0', 12))
+          .. subrecord('INAM', '7\0')
+          .. subrecord('PNAM', '')
+          .. subrecord('NAME', 'caf\xe9')
+          .. subrecord('ZZZZ', 'not text')
+          .. subrecord('NAME', 'again\0junk')
+      ) .. record('CELL', subrecord('RGNN', 'region\0') .. subrecord('NAME', 'cell\0'))
+    )
+    expect(tes3.records.stringFields(plugin, 0)).toEqual {
+      { name = 'info-id', value = '7', tag = 'INAM', subrecord = 1, start = 36, finish = 46 },
+      { name = 'previous', value = '', tag = 'PNAM', subrecord = 2, start = 46, finish = 54 },
+      { name = 'text', value = 'caf\u{e9}', tag = 'NAME', subrecord = 3, start = 54, finish = 66 },
+      { name = 'text', value = 'again', tag = 'NAME', subrecord = 5, start = 82, finish = 100 },
+    }
+    expect(tes3.records.fieldId(plugin, 0)).toBe '7'
+    expect(tes3.records.stringFields(plugin, 1)).toEqual {
+      { name = 'region', value = 'region', tag = 'RGNN', subrecord = 0, start = 116, finish = 131 },
+      { name = 'id', value = 'cell', tag = 'NAME', subrecord = 1, start = 131, finish = 144 },
+    }
+    expect(tes3.records.fieldId(plugin, 1)).toBe 'cell'
+    expect(tes3.records.fieldId(open(record('STAT', subrecord('MODL', 'a\0'))), 0)).toBeNil()
+
+    -- An edited record's fields are where they are in its own bytes.
+    plugin:replaceSubrecord(1, 0, 'r\0')
+    expect(tes3.records.stringFields(plugin, 1)).toEqual {
+      { name = 'region', value = 'r', tag = 'RGNN', subrecord = 0, start = 16, finish = 26 },
+      { name = 'id', value = 'cell', tag = 'NAME', subrecord = 1, start = 26, finish = 39 },
+    }
+  end)
 end)
 
 -- jess's `jess.plugin.new` contract (`contracts/plugin/build`): the same bytes, from the calls a
