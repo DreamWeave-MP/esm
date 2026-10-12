@@ -700,16 +700,13 @@ end
 function Plugin.deleteSubrecordsByTag(self: Plugin, index: number, tag: string): number
   touch(self)
   local code = Tags.code(tag)
+  -- A tag is deleted from records by the thousand, and most of them never had it.
+  if not self:findSubrecord(index, code) then return 0 end
+
   local list, header, at = pieces(self, index)
-  local kept = {}
-  for _, piece in list do
-    if buffer.readu32(piece.source, piece.start) ~= code then table.insert(kept, piece) end
-  end
-
-  local count = #list - #kept
-  if count > 0 then rebuild(self, index, kept, header, at) end
-
-  return count
+  local kept = [for piece in list if buffer.readu32(piece.source, piece.start) ~= code => piece]
+  rebuild(self, index, kept, header, at)
+  return #list - #kept
 end
 
 --[[ CELL references ]]
