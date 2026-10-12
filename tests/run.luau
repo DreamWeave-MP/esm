@@ -848,6 +848,102 @@ suite.describe('typed records', function()
     )
   end)
 
+  suite.it('lays a value over its type\'s defaults: a struct field by field, a list whole', function()
+    local function written(value: tes3.Value): string return buffer.tostring(tes3.encode(value)) end
+
+    local function item(): tes3.Value
+      return { type = 'MiscItem', id = 'item', data = { weight = 2 }, name = 'Item' }
+    end
+
+    local full = tes3.default 'MiscItem' :: any
+    full.id = 'item'
+    full.name = 'Item'
+    full.data.weight = 2
+    local partial = item()
+    expect(written(partial)).toBe(written(full))
+
+    -- Encoding reads the value handed in: it's as it was after, and its tables the caller's.
+    expect(partial).toEqual(item())
+    expect(table.isfrozen(partial)).toBe(false)
+    expect(table.isfrozen(partial.data :: { [string]: unknown })).toBe(false)
+
+    -- A field no default has is carried along and never written.
+    local extra = item()
+    local extraData = extra.data :: { [string]: unknown }
+    extra.unheardOf = { 1, 2, 3 }
+    extraData.another = 'x'
+    expect(written(extra)).toBe(written(full))
+
+    -- A field that is there is the value's, whatever it is: nothing stands in for a wrong one.
+    expect(refusal('MiscItem', { data = false })).toBe 'value.data: expected table, got boolean'
+    expect(refusal('MiscItem', { id = false })).toBe 'value.id: expected string, got boolean'
+
+    -- A list is taken whole, and never filled out from the default's.
+    expect(refusal('Cell', { data = { grid = { 5 } } })).toBe 'data.grid[2]: expected number, got nil'
+    expect(refusal('Cell', { data = { grid = { 5, 6, 7 } } })).toBe ''
+  end)
+
+  suite.it('gives a default that is the caller\'s to change, a new one each time', function()
+    local first = tes3.default 'Npc' :: any
+    local untouched = buffer.tostring(tes3.encode(first))
+    first.data.level = 77
+    table.insert(first.inventory, { 1, 'gold' })
+    expect(buffer.tostring(tes3.encode(first)) == untouched).toBe(false)
+
+    -- What one caller did to its default is in no other, nor in what a bare value encodes to.
+    local second = tes3.default 'Npc' :: any
+    expect(second.data.level).toBe(0)
+    expect(second.inventory).toEqual {}
+    expect(table.isfrozen(second.data)).toBe(false)
+    expect(buffer.tostring(tes3.encode(second))).toBe(untouched)
+    expect(buffer.tostring(tes3.encode { type = 'Npc' })).toBe(untouched)
+  end)
+
+  suite.it('gives a class of no attributes, skills, or services by default', function()
+    expect((tes3.default 'Class' :: tes3.Value).data).toEqual {
+      attribute1 = 'None',
+      attribute2 = 'None',
+      specialization = 'None',
+      minor1 = 'None',
+      minor2 = 'None',
+      minor3 = 'None',
+      minor4 = 'None',
+      minor5 = 'None',
+      major1 = 'None',
+      major2 = 'None',
+      major3 = 'None',
+      major4 = 'None',
+      major5 = 'None',
+      flags = '',
+      services = '',
+    }
+  end)
+
+  suite.it('reads a faction\'s ten ranks and seven skills each from its own place', function()
+    local value = tes3.default 'Faction' :: any
+    value.id = 'faction'
+    value.data.favoredAttributes = { 'Strength', 'Luck' }
+    value.data.favoredSkills =
+      { 'Block', 'Armorer', 'MediumArmor', 'HeavyArmor', 'BluntWeapon', 'LongBlade', 'Axe' }
+
+    for rank, requirement in value.data.requirements do
+      requirement.attributes = { rank, rank + 10 }
+      requirement.primarySkill = rank + 20
+      requirement.favoredSkill = rank + 30
+      requirement.reputation = rank + 40
+    end
+
+    expect(#value.data.requirements).toBe(10)
+    local encoded = tes3.encode(value)
+    expect(tes3.decode(encoded, 0, buffer.len(encoded), 'win1252')).toEqual(value)
+
+    -- FADT: two attributes, ten ranks of five i32s, seven skills, and flags.
+    local source, at, size = tes3.open(encoded):findSubrecord(0, tes3.tags.code 'FADT')
+    expect(size).toBe(240)
+    expect(buffer.readi32(source :: buffer, at + 8 + 9 * 20 + 16)).toBe(50)
+    expect(buffer.readi32(source :: buffer, at + 208 + 6 * 4)).toBe(6)
+  end)
+
   suite.it('refuses text its code page lacks, and takes text it has', function()
     expect(refusal('Static', { id = 'Ж' })).toBe 'encode error: Ж'
     local value = tes3.default 'Static' :: tes3.Value
