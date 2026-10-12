@@ -55,9 +55,21 @@ end
 
 --- For each element of `left`, the index of the `right` element it's paired with, by the
 --- highest-scoring order-preserving alignment (0 for none). A pair with the same bytes scores
---- `same`; one with only the same tag scores `alike`, or can't match when that's 0.
+--- `same`, the most a pair can; one with only the same tag scores `alike`, or can't match when
+--- that's 0.
 local function align(left: { Sub }, right: { Sub }, same: number, alike: number): { number }
-  local rows, columns = #left, #right
+  local pairs: { number } = table.create(#left, 0)
+
+  -- Leading pairs with the same bytes are paired whatever follows them: no pair scores higher,
+  -- and the walk below takes a pair as soon as the best score allows one. An edit leaves most of
+  -- a record as it was, so most of an alignment is this, and only the rest is scored.
+  local lead = 0
+  while lead < #left and lead < #right and left[lead + 1].bytes == right[lead + 1].bytes do
+    lead += 1
+    pairs[lead] = lead
+  end
+
+  local rows, columns = #left - lead, #right - lead
   local width = columns + 1
   local scores: { number } = table.create((rows + 1) * width, 0)
   local function at(row: number, column: number): number return row * width + column + 1 end
@@ -65,9 +77,9 @@ local function align(left: { Sub }, right: { Sub }, same: number, alike: number)
   -- The score of pairing a row with a column is worked out here, not by a function handed in:
   -- there's a pair to every row and column, and the call was most of a write-back.
   for row = rows - 1, 0, -1 do
-    local {tag, bytes} = left[row + 1]
+    local {tag, bytes} = left[lead + row + 1]
     for column = columns - 1, 0, -1 do
-      local other = right[column + 1]
+      local other = right[lead + column + 1]
       local skip = math.max(scores[at(row + 1, column)], scores[at(row, column + 1)])
       local pairScore = if bytes == other.bytes then same elseif tag == other.tag then alike else 0
       local take = if pairScore > 0 then pairScore + scores[at(row + 1, column + 1)] else 0
@@ -75,17 +87,16 @@ local function align(left: { Sub }, right: { Sub }, same: number, alike: number)
     end
   end
 
-  local pairs: { number } = table.create(rows, 0)
   local row, column = 0, 0
   while row < rows and column < columns do
     local current = scores[at(row, column)]
-    local one, other = left[row + 1], right[column + 1]
+    local one, other = left[lead + row + 1], right[lead + column + 1]
     local pairScore = if one.bytes == other.bytes
       then same
       elseif one.tag == other.tag then alike
       else 0
     if pairScore > 0 and current == pairScore + scores[at(row + 1, column + 1)] then
-      pairs[row + 1] = column + 1
+      pairs[lead + row + 1] = lead + column + 1
       row += 1
       column += 1
     elseif current == scores[at(row + 1, column)] then
