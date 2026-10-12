@@ -14,6 +14,7 @@ original subrecords an edit didn't change.
 ]]
 
 local Decode = require './decode'
+local References = require './references'
 local Schema = require './schema'
 local Tags = require './tags'
 local Text = require './text'
@@ -1087,9 +1088,7 @@ Encoders.LeveledCreature =
 
 --[[ CELL ]]
 
-local function persistent(ref: Value): boolean
-  return ref.movedCell ~= nil or ref.destination ~= nil or not ref.temporary
-end
+local persistent = References.persistent
 
 local function reference(writer: Writer, ref: Value, encoding: string, path: string)
   sub(writer, 'NAME', stringOf(ref, 'id', path), encoding)
@@ -1218,25 +1217,7 @@ Encoders.Cell = function(writer, record, encoding, bits)
     byKey[numberOf(ref, 'mastIndex', path) * 16777216 + numberOf(ref, 'refrIndex', path)] = ref
   end
 
-  local sorted: { Value } = {}
-  for _, ref in byKey do
-    table.insert(sorted, ref)
-  end
-
-  table.sort(sorted, function(left, right)
-    local leftPersistent, rightPersistent = persistent(left), persistent(right)
-    if leftPersistent ~= rightPersistent then return leftPersistent end
-
-    local leftMaster, rightMaster = left.mastIndex :: number, right.mastIndex :: number
-    if leftMaster == 0 then leftMaster = 4294967296 end
-
-    if rightMaster == 0 then rightMaster = 4294967296 end
-
-    if leftMaster ~= rightMaster then return leftMaster < rightMaster end
-
-    return (left.refrIndex :: number) < (right.refrIndex :: number)
-  end)
-
+  local sorted = References.ordered(byKey)
   local temporary = 0
   for index, ref in sorted do
     local path = `references[{index}]`

@@ -11,6 +11,7 @@ table from subrecord tag to a handler that reads that subrecord into the value a
 the stream is after it.
 ]]
 
+local References = require './references'
 local Schema = require './schema'
 local Tags = require './tags'
 local Text = require './text'
@@ -1950,10 +1951,6 @@ local function reference(
   return ref, position
 end
 
-local function persistent(ref: Value): boolean
-  return ref.movedCell ~= nil or ref.destination ~= nil or not ref.temporary
-end
-
 local function cell(source: buffer, start: number, finish: number, encoding: string): Value
   local record: Value = { name = '', data = { flags = '', grid = { 0, 0 } } }
   local flags = buffer.readu32(source, start + 12)
@@ -2061,26 +2058,7 @@ local function cell(source: buffer, start: number, finish: number, encoding: str
     ref.movedCell = { entry[2], entry[3] }
   end
 
-  local sorted: { Value } = {}
-  for _, ref in references do
-    table.insert(sorted, ref)
-  end
-
-  table.sort(sorted, function(left, right)
-    local leftPersistent, rightPersistent = persistent(left), persistent(right)
-    if leftPersistent ~= rightPersistent then return leftPersistent end
-
-    local leftMaster, rightMaster = left.mastIndex :: number, right.mastIndex :: number
-    if leftMaster == 0 then leftMaster = 4294967296 end
-
-    if rightMaster == 0 then rightMaster = 4294967296 end
-
-    if leftMaster ~= rightMaster then return leftMaster < rightMaster end
-
-    return (left.refrIndex :: number) < (right.refrIndex :: number)
-  end)
-
-  record.references = sorted
+  record.references = References.ordered(references)
   record.flags = flagText(Flags.ObjectFlags, flags)
   return record
 end
