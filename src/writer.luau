@@ -58,6 +58,16 @@ local function u32(writer: Writer, value: number)
   writer.length = length + 4
 end
 
+--- Two u32s, as a subrecord's tag and size are.
+local function u32Pair(writer: Writer, first: number, second: number)
+  local bytes, length = writer.bytes, writer.length
+  if length + 8 > buffer.len(bytes) then bytes = grow(writer, length + 8) end
+
+  buffer.writeu32(bytes, length, first)
+  buffer.writeu32(bytes, length + 4, second)
+  writer.length = length + 8
+end
+
 local function i32(writer: Writer, value: number)
   local bytes, length = writer.bytes, writer.length
   if length + 4 > buffer.len(bytes) then bytes = grow(writer, length + 4) end
@@ -132,6 +142,7 @@ return table.freeze {
   string = stringBytes,
   u16 = u16,
   u32 = u32,
+  u32Pair = u32Pair,
   u64 = u64,
   u8 = u8,
   zeros = zeros,

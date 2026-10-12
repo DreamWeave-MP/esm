@@ -112,7 +112,19 @@ end
 
 --[[ Writing ]]
 
-local function tag(writer: Writer, name: string) Writer.u32(writer, Tags.code(name)) end
+--- The number each tag an encoder writes is written as, kept from the first time it's asked for.
+local Codes: { [string]: number } = {}
+
+local function codeOf(name: string): number
+  local code = Codes[name]
+  if code then return code end
+
+  code = Tags.code(name)
+  Codes[name] = code
+  return code
+end
+
+local function tag(writer: Writer, name: string) Writer.u32(writer, codeOf(name)) end
 
 --- Text in the code page, cut at its first NUL (`Writer::encode`).
 local function encodeText(value: string, encoding: string): string
@@ -175,8 +187,7 @@ local function opt(writer: Writer, name: string, value: string, encoding: string
 end
 
 local function header(writer: Writer, name: string, size: number)
-  tag(writer, name)
-  Writer.u32(writer, size)
+  Writer.u32Pair(writer, codeOf(name), size)
 end
 
 local function dele(writer: Writer, bits: number)
