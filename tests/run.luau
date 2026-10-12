@@ -536,6 +536,77 @@ suite.describe('profiles', function()
       'XXXX isn\'t a record type OpenMW loads; it refuses the file ("Unknown record")',
     }
   end)
+
+  suite.it('says where each tag that isn\'t text and each subrecord vanilla lacks is', function()
+    local plugin = open(
+      record('TES3', hedr(0, '', '', 3) .. subrecord('FORM', u32(1)))
+        .. record(
+          'STAT',
+          subrecord('NAME', 'a\0')
+            .. subrecord('ZZZZ', '')
+            .. subrecord('A\1B\255', 'x')
+            .. subrecord('ENID', '')
+        )
+        .. record('\1BCD', subrecord('NAME', 'b\0'))
+        .. record('BOOK', subrecord('SKIL', '') .. subrecord('NAME', 'c\0'))
+    )
+    local damaged = {
+      {
+        offset = 370,
+        message = 'STAT subrecord type [65, 1, 66, 255] isn\'t text; the record is damaged here',
+      },
+      {
+        offset = 387,
+        message = 'record type [1, 66, 67, 68] isn\'t text; the file is damaged here',
+      },
+    }
+
+    expect(plugin:validateProfile 'raw').toEqual(damaged)
+    expect(plugin:validateProfile 'omwaddon').toEqual {
+      damaged[1],
+      damaged[2],
+      {
+        offset = 387,
+        message = '\\x01BCD isn\'t a record type OpenMW loads; it refuses the file ("Unknown record")',
+      },
+    }
+
+    local static = {
+      { offset = 362, message = 'STAT.ZZZZ is not part of the Morrowind format' },
+      { offset = 370, message = 'STAT.A\\x01B\\xFF is not part of the Morrowind format' },
+      { offset = 379, message = 'STAT.ENID is an OpenMW extension' },
+    }
+
+    expect(plugin:recordProfileDiagnostics(1, 'tes3')).toEqual(static)
+    expect(plugin:recordProfileDiagnostics(1, 'raw')).toEqual {}
+    expect(plugin:recordProfileDiagnostics(2, 'tes3')).toEqual {
+      { offset = 387, message = '\\x01BCD is not a Morrowind record type' },
+    }
+
+    expect(plugin:validateProfile 'tes3').toEqual {
+      damaged[1],
+      damaged[2],
+      { offset = 324, message = 'TES3.FORM is an OpenMW extension' },
+      static[1],
+      static[2],
+      static[3],
+      { offset = 387, message = '\\x01BCD is not a Morrowind record type' },
+      { offset = 429, message = 'BOOK.SKIL is an OpenMW extension' },
+    }
+
+    -- An edited record has no bytes of its own in the file: its problems are where it ends.
+    plugin:replaceSubrecord(1, 0, 'renamed\0')
+    expect(plugin:validateProfile 'tes3').toEqual {
+      { offset = 387, message = damaged[1].message },
+      damaged[2],
+      { offset = 324, message = 'TES3.FORM is an OpenMW extension' },
+      { offset = 387, message = static[1].message },
+      { offset = 387, message = static[2].message },
+      { offset = 387, message = static[3].message },
+      { offset = 387, message = '\\x01BCD is not a Morrowind record type' },
+      { offset = 429, message = 'BOOK.SKIL is an OpenMW extension' },
+    }
+  end)
 end)
 
 suite.describe('typed records', function()
