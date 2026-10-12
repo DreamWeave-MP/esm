@@ -376,11 +376,7 @@ end
 
 --- Whether any record was opened only in part.
 function Plugin.hasPartialRecords(self: Plugin): boolean
-  for _, bits in self.parts do
-    if bits ~= 3 then return true end
-  end
-
-  return false
+  return any[for bits in self.parts => bits ~= 3]
 end
 
 --- Record `index`'s subrecords, in order.
@@ -434,7 +430,7 @@ end
 --- The plugin's bytes: untouched records copied from the original, edited ones rebuilt, deleted
 --- ones left out. Runs of untouched records copy in one go.
 function Plugin.save(self: Plugin): buffer
-  local source, starts, bodies = self.source, self.starts, self.bodies
+  local {source, starts, bodies} = self
   local total = 0
   for entry, start in starts do
     local body = bodies[entry]
@@ -612,11 +608,7 @@ local function rebuild(
   header: buffer,
   headerAt: number
 )
-  local length = 0
-  for _, piece in list do
-    length += piece.finish - piece.start
-  end
-
+  local length = sum[for {start, finish} in list => finish - start]
   local out = buffer.create(RecordHeaderLength + length)
   buffer.copy(out, 0, header, headerAt, RecordHeaderLength)
   buffer.writeu32(out, 4, length)
@@ -687,11 +679,7 @@ function Plugin.deleteSubrecords(self: Plugin, index: number, subs: { number }):
 
   if count == 0 then return 0 end
 
-  local kept = {}
-  for ordinal, piece in list do
-    if not remove[ordinal - 1] then table.insert(kept, piece) end
-  end
-
+  local kept = [for ordinal, piece in enumerate(list) if not remove[ordinal - 1] => piece]
   rebuild(self, index, kept, header, at)
   return count
 end
@@ -834,24 +822,18 @@ function Plugin.deleteCellReferences(self: Plugin, index: number, refs: { number
   end
 
   if nam0 then
-    local remaining = 0
-    for ordinal, group in groups.references do
-      if not remove[ordinal] and group[1] + 1 > nam0 then
-        remaining += 1
-      end
-    end
-
+    local remaining = #[
+      for ordinal, group in enumerate(groups.references)
+      if not remove[ordinal] and group[1] + 1 > nam0
+      => group
+    ]
     local value = buffer.create(4)
     buffer.writeu32(value, 0, remaining)
     local piece = list[nam0]
     list[nam0] = newPiece(piece.source, piece.start, value)
   end
 
-  local kept = {}
-  for ordinal, piece in list do
-    if not dropped[ordinal] then table.insert(kept, piece) end
-  end
-
+  local kept = [for ordinal, piece in enumerate(list) if not dropped[ordinal] => piece]
   rebuild(self, index, kept, header, at)
   return count
 end
@@ -875,8 +857,8 @@ local function codeFacts(self: Plugin): (boolean, number)
   if facts and facts.revision == self.revision then return facts.save, facts.headers end
 
   local save, headers = false, 0
-  local source, bodies = self.source, self.bodies
-  for entry, start in self.starts do
+  local {source, bodies, starts} = self
+  for entry, start in starts do
     local body = bodies[entry]
     local code = if body then buffer.readu32(body, 0) else buffer.readu32(source, start)
     if code == SaveTag then
@@ -1166,13 +1148,10 @@ end
 function Plugin.setMasters(self: Plugin, masters: { { name: string, size: number } }): boolean
   local current = self:masters()
   if #current == #masters then
-    local same = true
-    for ordinal, master in current do
-      if master.name ~= masters[ordinal].name or master.size ~= masters[ordinal].size then
-        same = false
-        break
-      end
-    end
+    local same = all[
+      for ordinal, master in enumerate(current)
+      => master.name == masters[ordinal].name and master.size == masters[ordinal].size
+    ]
 
     if same then return false end
   end
@@ -1548,11 +1527,10 @@ local OpenMwSubrecords: { { string } } = {
 }
 
 local function isOpenMwSubrecord(record: string, sub: string): boolean
-  for _, entry in OpenMwSubrecords do
-    if entry[2] == sub and (entry[1] == '*' or entry[1] == record) then return true end
-  end
-
-  return false
+  return any[
+    for entry in OpenMwSubrecords
+    => entry[2] == sub and (entry[1] == '*' or entry[1] == record)
+  ]
 end
 
 --- Where a problem with the subrecord at `position` of record `index`'s bytes is: there, or where
@@ -1843,12 +1821,11 @@ local function checkRoundTrip(bytes: buffer, excluded: { string }?, ignoreCruft:
   end
 
   local function filtered(side: Plugin): string
-    local parts = {}
-    for index = 0, side:count() - 1 do
-      if not skip[side:code(index)] then table.insert(parts, buffer.tostring(side:bytes(index))) end
-    end
-
-    return table.concat(parts)
+    return table.concat([
+      for index in range(0, side:count() - 1)
+      if not skip[side:code(index)]
+      => buffer.tostring(side:bytes(index))
+    ])
   end
 
   -- parse raises just the same on saved bytes that no longer frame, and that's the answer too.
