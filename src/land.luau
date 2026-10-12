@@ -219,11 +219,7 @@ local function read(plugin: Plugin, index: number, parts: { Part }?): Terrain
 
     local length = PartLengths[name]
     local at = payload(PartTags[name], length)
-    if not at then continue end
-
-    local copy = buffer.create(length)
-    buffer.copy(copy, 0, source, at, length)
-    copies[name] = copy
+    if at then copies[name] = source[(at + 1):(at + length)] end
   end
 
   terrain.normals, terrain.colors = copies.normals, copies.colors
