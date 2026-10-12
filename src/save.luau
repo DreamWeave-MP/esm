@@ -282,11 +282,10 @@ local function decodeUserdata(cursor: Cursor, tag: number): LuaValue
       fail(dataAt - cursor.base, 'Lua object-list userdata payload length is not a multiple of 8')
     end
 
-    local refs = {}
-    for index = 0, dataLength // 8 - 1 do
-      table.insert(refs, ref(cursor, dataAt + index * 8, 8, ''))
-    end
-
+    local refs = [
+      for index in range(0, dataLength // 8 - 1)
+      => ref(cursor, dataAt + index * 8, 8, '')
+    ]
     return { kind = 'objectList', refs = refs }
   end
 
@@ -439,10 +438,8 @@ local function encodeValue(value: LuaValue, out: { string })
     local refs: { LuaRef } = value.refs or {}
     if value.ref then refs = { value.ref } end
 
-    local parts: { string } = {}
-    for _, reference in refs do
-      table.insert(parts, string.pack('<I4i4', reference.index, reference.contentFile))
-    end
+    local parts: { string } =
+      [for {index, contentFile} in refs => string.pack('<I4i4', index, contentFile)]
 
     local typeName = if kind == 'object'
       then 'o'
