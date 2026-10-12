@@ -16,10 +16,25 @@ local function code(tag: string): number
   return buffer.readu32(Scratch, 0)
 end
 
+--- The string each tag number has read as. A file's tags are a few dozen, read over and over, but
+--- they're whatever its bytes are, so only so many are kept.
+local Names: { [number]: string } = {}
+local NamesLimit = 4096
+local namesKept = 0
+
 --- A tag number's four bytes as a string.
 local function name(tag: number): string
+  local known = Names[tag]
+  if known then return known end
+
   buffer.writeu32(Scratch, 0, tag)
-  return buffer.readstring(Scratch, 0, 4)
+  local text = buffer.readstring(Scratch, 0, 4)
+  if namesKept < NamesLimit then
+    namesKept += 1
+    Names[tag] = text
+  end
+
+  return text
 end
 
 --- A tag as jess displays one: printable ASCII as is, every other byte as `\xNN`.
