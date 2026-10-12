@@ -773,6 +773,59 @@ suite.describe('typed records', function()
     )
   end)
 
+  suite.it('keeps the first of several subrecords an edit leaves alike, and their own bytes', function()
+    -- Bytes after an item's NUL aren't part of its name, so these read alike and are told apart
+    -- only by what a write-back keeps.
+    local function item(count: number, name: string, junk: string): string
+      local padding = string.rep('\0', 31 - #name - #junk)
+      return subrecord('NPCO', string.pack('<i4', count) .. name .. '\0' .. junk .. padding)
+    end
+
+    local head = subrecord('NAME', 'chest')
+      .. subrecord('MODL', 'm.nif\0')
+      .. subrecord('CNDT', string.pack('<f', 10))
+      .. subrecord('FLAG', u32(8))
+    local plugin = open(
+      record(
+        'CONT',
+        head
+          .. item(1, 'gold', 'a')
+          .. item(1, 'gold', 'b')
+          .. item(1, 'gold', 'c')
+          .. item(2, 'key', 'd')
+          .. item(3, 'ring', 'e')
+      )
+    )
+    local value = plugin:decode(0) :: any
+    value.inventory = { { 1, 'gold' }, { 1, 'gold' }, { 2, 'key' }, { 5, 'new' }, { 3, 'ring' } }
+    expect(plugin:set(0, value)).toBe(true)
+    expect(buffer.tostring(plugin:bytes(0))).toBe(
+      record(
+        'CONT',
+        head
+          .. item(1, 'gold', 'a')
+          .. item(1, 'gold', 'b')
+          .. item(2, 'key', 'd')
+          .. item(5, 'new', '')
+          .. item(3, 'ring', 'e')
+      )
+    )
+
+    value.inventory = { { 1, 'gold' }, { 2, 'key' }, { 1, 'gold' }, { 3, 'ring' }, { 1, 'gold' } }
+    expect(plugin:set(0, value)).toBe(true)
+    expect(buffer.tostring(plugin:bytes(0))).toBe(
+      record(
+        'CONT',
+        head
+          .. item(1, 'gold', 'a')
+          .. item(2, 'key', '')
+          .. item(1, 'gold', 'b')
+          .. item(3, 'ring', 'e')
+          .. item(1, 'gold', '')
+      )
+    )
+  end)
+
   suite.it('writes back only the subrecords an edit changed', function()
     -- No NUL after the name: an encoding would add one, but an untouched NAME keeps its bytes.
     local bytes = record(
