@@ -97,26 +97,24 @@ export type Key = { type: string, id: string }
 
 --- Every identified record's `{ type, id }`, sorted by type then id, each once.
 local function objectKeys(plugin: Plugin): { Key }
-  local seen: { [string]: boolean } = {}
-  local keys: { Key } = {}
+  local keys: { [string]: Key } = {}
+  local texts: { string } = {}
   for index = 0, plugin:count() - 1 do
     local recordId = id(plugin, index)
     if not recordId then continue end
 
     local tag = Tags.display(plugin:code(index))
-    local key = tag .. '\0' .. recordId
-    if seen[key] then continue end
+    local text = tag .. '\0' .. recordId
+    if keys[text] then continue end
 
-    seen[key] = true
-    table.insert(keys, { type = tag, id = recordId })
+    keys[text] = { type = tag, id = recordId }
+    table.insert(texts, text)
   end
 
-  table.sort(keys, function(left: Key, right: Key)
-    if left.type ~= right.type then return left.type < right.type end
-
-    return left.id < right.id
-  end)
-  return keys
+  -- A type as displayed has no NUL in it, and nothing sorts before one: a type, a NUL, and an id
+  -- sort as the type and then the id do, and as strings, with no comparator to call.
+  table.sort(texts)
+  return [for text in texts => keys[text]]
 end
 
 --- The first record of type `tag` whose id is `recordId`, as a 0-based index, or nil.
