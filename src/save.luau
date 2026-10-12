@@ -474,7 +474,11 @@ end
 local function hasInteger(value: LuaValue): boolean
   if value.kind == 'integer' then return true end
 
-  for _, entry in value.entries or {} do
+  -- Most values hold no entries, and an empty list made to walk for each was most of the walk.
+  local entries = value.entries
+  if not entries then return false end
+
+  for _, entry in entries do
     if hasInteger(entry.key) or hasInteger(entry.value) then return true end
   end
 
@@ -505,15 +509,20 @@ end
 --- Every object reference in a Lua value, in order.
 local function luaRefs(value: LuaValue, out: { LuaRef }?): { LuaRef }
   local refs = out or {}
-  for _, entry in value.entries or {} do
-    luaRefs(entry.key, refs)
-    luaRefs(entry.value, refs)
+  local {entries, ref: object, refs: objects} = value
+  if entries then
+    for _, entry in entries do
+      luaRefs(entry.key, refs)
+      luaRefs(entry.value, refs)
+    end
   end
 
-  if value.ref then table.insert(refs, value.ref) end
+  if object then table.insert(refs, object) end
 
-  for _, reference in value.refs or {} do
-    table.insert(refs, reference)
+  if objects then
+    for _, reference in objects do
+      table.insert(refs, reference)
+    end
   end
 
   return refs
