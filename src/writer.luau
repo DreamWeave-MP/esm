@@ -35,7 +35,7 @@ end
 -- as much work as the write.
 
 local function u8(writer: Writer, value: number)
-  local bytes, length = writer.bytes, writer.length
+  local {bytes, length} = writer
   if length + 1 > buffer.len(bytes) then bytes = grow(writer, length + 1) end
 
   buffer.writeu8(bytes, length, value)
@@ -43,7 +43,7 @@ local function u8(writer: Writer, value: number)
 end
 
 local function u16(writer: Writer, value: number)
-  local bytes, length = writer.bytes, writer.length
+  local {bytes, length} = writer
   if length + 2 > buffer.len(bytes) then bytes = grow(writer, length + 2) end
 
   buffer.writeu16(bytes, length, value)
@@ -51,7 +51,7 @@ local function u16(writer: Writer, value: number)
 end
 
 local function u32(writer: Writer, value: number)
-  local bytes, length = writer.bytes, writer.length
+  local {bytes, length} = writer
   if length + 4 > buffer.len(bytes) then bytes = grow(writer, length + 4) end
 
   buffer.writeu32(bytes, length, value)
@@ -60,7 +60,7 @@ end
 
 --- Two u32s, as a subrecord's tag and size are.
 local function u32Pair(writer: Writer, first: number, second: number)
-  local bytes, length = writer.bytes, writer.length
+  local {bytes, length} = writer
   if length + 8 > buffer.len(bytes) then bytes = grow(writer, length + 8) end
 
   buffer.writeu32(bytes, length, first)
@@ -69,7 +69,7 @@ local function u32Pair(writer: Writer, first: number, second: number)
 end
 
 local function i32(writer: Writer, value: number)
-  local bytes, length = writer.bytes, writer.length
+  local {bytes, length} = writer
   if length + 4 > buffer.len(bytes) then bytes = grow(writer, length + 4) end
 
   buffer.writei32(bytes, length, value)
@@ -77,7 +77,7 @@ local function i32(writer: Writer, value: number)
 end
 
 local function f32(writer: Writer, value: number)
-  local bytes, length = writer.bytes, writer.length
+  local {bytes, length} = writer
   if length + 4 > buffer.len(bytes) then bytes = grow(writer, length + 4) end
 
   buffer.writef32(bytes, length, value)
@@ -85,7 +85,7 @@ local function f32(writer: Writer, value: number)
 end
 
 local function f64(writer: Writer, value: number)
-  local bytes, length = writer.bytes, writer.length
+  local {bytes, length} = writer
   if length + 8 > buffer.len(bytes) then bytes = grow(writer, length + 8) end
 
   buffer.writef64(bytes, length, value)
@@ -94,7 +94,7 @@ end
 
 --- A u64 held exactly in a number (up to 2^53).
 local function u64(writer: Writer, value: number)
-  local bytes, length = writer.bytes, writer.length
+  local {bytes, length} = writer
   if length + 8 > buffer.len(bytes) then bytes = grow(writer, length + 8) end
 
   buffer.writeu32(bytes, length, value % 4294967296)
@@ -103,7 +103,7 @@ local function u64(writer: Writer, value: number)
 end
 
 local function stringBytes(writer: Writer, value: string)
-  local bytes, length = writer.bytes, writer.length
+  local {bytes, length} = writer
   local finish = length + #value
   if finish > buffer.len(bytes) then bytes = grow(writer, finish) end
 

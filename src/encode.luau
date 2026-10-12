@@ -20,8 +20,7 @@ local Tags = require './tags'
 local Text = require './text'
 local Writer = require './writer'
 
-local Enums = Schema.Enums
-local Flags = Schema.Flags
+local {Enums, Flags} = Schema
 
 type Value = Decode.Value
 type Writer = Writer.Writer

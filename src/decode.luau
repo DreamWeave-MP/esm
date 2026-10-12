@@ -17,11 +17,7 @@ local Tags = require './tags'
 local Text = require './text'
 local data = require '@dream/data'
 
-local Enums = Schema.Enums
-local Flags = Schema.Flags
-local nameOf = Schema.nameOf
-local flagText = Schema.flagText
-local base64 = Schema.base64
+local {Enums, Flags, nameOf, flagText, base64} = Schema
 
 export type Value = { [string]: unknown }
 
