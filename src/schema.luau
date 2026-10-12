@@ -657,11 +657,26 @@ end
 
 local FlagValues: { [Flags]: { [string]: number } } = {}
 
+--- Caches the bits each flags text named, per flags type, as `FlagTexts` does the other way. A
+--- text is whatever a script wrote, so only so many are kept.
+local FlagBits: { [Flags]: { [string]: number } } = {}
+local FlagBitsLimit = 4096
+local flagBitsKept = 0
+
 --- The bits a flags text names; names are case-sensitive, `0x` hex is kept as is.
 local function flagBits(set: Flags, text: unknown, field: string): number
   if type(text) == 'number' then return text end
 
   if type(text) ~= 'string' then error(`{field}: expected a flags string, got {type(text)}`, 0) end
+
+  local cache = FlagBits[set]
+  if not cache then
+    cache = {}
+    FlagBits[set] = cache
+  end
+
+  local cached = cache[text]
+  if cached then return cached end
 
   local names = FlagValues[set]
   if not names then
@@ -674,17 +689,22 @@ local function flagBits(set: Flags, text: unknown, field: string): number
   end
 
   local bits = 0
-  if string.match(text, '^%s*$') then return 0 end
+  if not string.match(text, '^%s*$') then
+    for part in string.gmatch(text .. '|', '([^|]*)|') do
+      local flag = string.match(part, '^%s*(.-)%s*$') :: string
+      if flag == '' then error(`{field}: encountered empty flag`, 0) end
 
-  for part in string.gmatch(text .. '|', '([^|]*)|') do
-    local flag = string.match(part, '^%s*(.-)%s*$') :: string
-    if flag == '' then error(`{field}: encountered empty flag`, 0) end
+      local hex = string.match(flag, '^0x(%x+)$')
+      local value = if hex then tonumber(hex, 16) else names[flag]
+      if not value then error(`{field}: unrecognized named flag \`{flag}\``, 0) end
 
-    local hex = string.match(flag, '^0x(%x+)$')
-    local value = if hex then tonumber(hex, 16) else names[flag]
-    if not value then error(`{field}: unrecognized named flag \`{flag}\``, 0) end
+      bits = bit32.bor(bits, value)
+    end
+  end
 
-    bits = bit32.bor(bits, value)
+  if flagBitsKept < FlagBitsLimit then
+    flagBitsKept += 1
+    cache[text] = bits
   end
 
   return bits
