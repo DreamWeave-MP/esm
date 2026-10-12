@@ -47,12 +47,8 @@ export type LandTerrain = Land.Terrain
 export type LandParts = Land.Parts
 
 --- Every record type jess-omwaddon decodes: its tag and its name.
-local RecordTypes: { { tag: string, name: string } } = {}
-for _, spec in Decode.specs do
-  table.insert(RecordTypes, { tag = spec.tag, name = spec.name })
-end
-
-table.freeze(RecordTypes)
+local RecordTypes: { { tag: string, name: string } } =
+  table.freeze([for {tag, name} in Decode.specs => { tag = tag, name = name }])
 
 --- Opens a TES3 file from its bytes.
 local function open(bytes: buffer | string, options: OpenOptions?): Plugin
