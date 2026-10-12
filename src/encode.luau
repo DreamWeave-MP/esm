@@ -1512,6 +1512,29 @@ for _, entry in Decode.specs do
   TagsByName[entry.name] = entry.tag
 end
 
+local function freeze(value: unknown): unknown
+  if type(value) ~= 'table' then return value end
+
+  for _, member in value :: { [unknown]: unknown } do
+    freeze(member)
+  end
+
+  return table.freeze(value)
+end
+
+--- Each record type's default value, made the first time one is encoded and frozen: `merge`
+--- hands its tables to an encoder as they are, and an encoder only reads.
+local Defaults: { [string]: Value } = {}
+
+local function defaultOf(name: string): Value
+  local default = Defaults[name]
+  if default then return default end
+
+  default = freeze(Decode.default(name)) :: Value
+  Defaults[name] = default
+  return default
+end
+
 --- A record value's bytes, header included, text in `encoding`. `value.type` names its record type.
 local function encode(value: Value, encoding: string?): buffer
   local codePage = encoding or 'win1252'
@@ -1524,7 +1547,7 @@ local function encode(value: Value, encoding: string?): buffer
   local encoder = Encoders[name]
   if not recordTag or not encoder then return fail(`unknown record type '{name}'`) end
 
-  local record = merge(Decode.default(name), value) :: Value
+  local record = merge(defaultOf(name), value) :: Value
   local bits = Schema.flagBits(Flags.ObjectFlags, record.flags, 'value.flags')
   local writer = Writer.new(256)
   tag(writer, recordTag)
