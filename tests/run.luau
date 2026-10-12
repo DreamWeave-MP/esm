@@ -151,6 +151,33 @@ suite.describe('framing', function()
     })
     expect(whole:isPartial(0)).toBe(false)
   end)
+
+  suite.it('says whether a filter left any record in part', function()
+    local header = subrecord('NAME', 'cell') .. subrecord('DATA', string.rep('\0', 12))
+    local refs = subrecord('FRMR', u32(1))
+      .. subrecord('NAME', 'ref')
+      .. subrecord('DATA', string.rep('\0', 24))
+    local bytes = record('STAT', subrecord('NAME', 'a'))
+      .. record('CELL', header .. refs)
+      .. record('CELL', header)
+
+    local function headers(): tes3.Keep return { references = false } end
+
+    expect(open(bytes):hasPartialRecords()).toBe(false)
+    expect(open(''):hasPartialRecords()).toBe(false)
+    expect(open(bytes, { keep = function() return 'whole' end }):hasPartialRecords()).toBe(false)
+    local partial = open(bytes, { keep = headers })
+    expect(partial:hasPartialRecords()).toBe(true)
+    expect(partial:isPartial(1)).toBe(true)
+    expect(partial:isPartial(2)).toBe(false)
+
+    -- Only the CELL with references to leave out is in part; without it, no record is.
+    partial:delete(1)
+    expect(partial:hasPartialRecords()).toBe(false)
+    partial:delete(0)
+    partial:delete(0)
+    expect(partial:hasPartialRecords()).toBe(false)
+  end)
 end)
 
 suite.describe('editing', function()
