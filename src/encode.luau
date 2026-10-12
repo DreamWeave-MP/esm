@@ -43,15 +43,13 @@ local function merge(default: unknown, value: unknown): unknown
     return value
   end
 
-  local out: Value = {}
   local defaultFields = default :: Value
-  local valueFields = value :: Value
-  for key, fallback in defaultFields do
-    out[key] = merge(fallback, valueFields[key])
-  end
-
-  for key, field in valueFields do
-    if defaultFields[key] == nil then out[key] = field end
+  local out = table.clone(defaultFields)
+  for key, field in value :: Value do
+    local fallback = defaultFields[key]
+    out[key] = if type(fallback) == 'table' and type(field) == 'table'
+      then merge(fallback, field)
+      else field
   end
 
   return out
