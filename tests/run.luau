@@ -74,6 +74,24 @@ local function tags(plugin: tes3.Plugin, index: number): { string }
 end
 
 suite.describe('framing', function()
+  suite.it('reads a tag as a number and back, and displays the bytes that aren\'t text', function()
+    local name, damaged = tes3.tags.code 'NAME', 0xff420141
+    expect(name).toBe(0x454d414e)
+
+    -- Each twice: a tag read once reads the same the next time.
+    for _ = 1, 2 do
+      expect(tes3.tags.name(name)).toBe 'NAME'
+      expect(tes3.tags.display(name)).toBe 'NAME'
+      expect(tes3.tags.isText(name)).toBe(true)
+      expect(tes3.tags.name(damaged)).toBe 'A\1B\255'
+      expect(tes3.tags.display(damaged)).toBe 'A\\x01B\\xFF'
+      expect(tes3.tags.lossy(damaged)).toBe 'A\1B\u{FFFD}'
+      expect(tes3.tags.isText(damaged)).toBe(false)
+      expect(tes3.tags.display(tes3.tags.code ' ~\127a')).toBe ' ~\\x7Fa'
+      expect(#tes3.tags.name(0 / 0)).toBe(4)
+    end
+  end)
+
   suite.it('keeps unknown records and subrecords byte for byte', function()
     local bytes = record('ZZZZ', subrecord('ABCD', 'payload') .. subrecord('WXYZ', '\0\1\2\3'))
     local plugin = open(bytes)

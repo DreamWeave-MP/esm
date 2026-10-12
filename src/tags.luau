@@ -29,7 +29,8 @@ local function name(tag: number): string
 
   buffer.writeu32(Scratch, 0, tag)
   local text = buffer.readstring(Scratch, 0, 4)
-  if namesKept < NamesLimit then
+  -- NaN is a number no table takes as a key.
+  if namesKept < NamesLimit and tag == tag then
     namesKept += 1
     Names[tag] = text
   end
