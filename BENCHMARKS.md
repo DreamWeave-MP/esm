@@ -19,7 +19,7 @@ jess run --package jpk/tes3 --package-path jpk --capability filesystem.read \
 
 - Machine: Intel Core i7-10870H @ 2.20 GHz, 16 threads, shared with other work while this ran.
 - Date: 2026-10-12.
-- Binary: the verified release build of Jess 0.1.0 on l3i 2.0.0 (Luau 0.742), the same one for
+- Binary: the verified release build of Jess 0.1.0 on l3i 2.0.1 (Luau 0.742), the same one for
   both sides.
 - Base: `7518b55`, the package before the move, with this bench. Head: `78aa9f1`.
 - Protocol: the whole bench run against base, then head, five times over, back to back under one
