@@ -15,6 +15,7 @@ local References = require './references'
 local Schema = require './schema'
 local Tags = require './tags'
 local Text = require './text'
+local data = require '@dream/data'
 
 local Enums = Schema.Enums
 local Flags = Schema.Flags
@@ -269,21 +270,19 @@ local function classData(source: buffer, position: number): Value
 end
 
 local function factionData(source: buffer, position: number): Value
-  local requirements = table.create(10)
-  for index = 0, 9 do
-    local at = position + 8 + index * 20
-    requirements[index + 1] = {
+  -- Ten ranks of twenty bytes each, then seven skills.
+  local requirements = [
+    for at in range(position + 8, position + 188, 20)
+    => {
       attributes = list(buffer.readi32(source, at), buffer.readi32(source, at + 4)),
       primarySkill = buffer.readi32(source, at + 8),
       favoredSkill = buffer.readi32(source, at + 12),
       reputation = buffer.readi32(source, at + 16),
     }
-  end
+  ]
 
-  local skills = table.create(7)
-  for index = 0, 6 do
-    skills[index + 1] = enum32(Enums.SkillId, source, position + 208 + index * 4)
-  end
+  local skills =
+    [for at in range(position + 208, position + 232, 4) => enum32(Enums.SkillId, source, at)]
 
   return {
     favoredAttributes = list(
@@ -702,11 +701,9 @@ spec(
     name = '',
     description = '',
     data = function()
+      -- A class of no attributes or skills: thirteen enums of -1, then flags of none.
       local none = buffer.create(60)
-      for at = 0, 48, 4 do
-        buffer.writei32(none, at, -1)
-      end
-
+      data.fill(none, 'i32', 0, 13, -1)
       return classData(none, 0)
     end,
   },
@@ -724,11 +721,10 @@ spec(
 -- An empty FactionData: zeros, whose enums read as their defaults... except that zero is a valid
 -- attribute (Strength) and skill (Block); the Rust default is None for both, so build it by hand.
 local function emptyFactionData(): Value
-  local requirements = table.create(10)
-  for index = 1, 10 do
-    requirements[index] =
-      { attributes = { 0, 0 }, primarySkill = 0, favoredSkill = 0, reputation = 0 }
-  end
+  local requirements = [
+    for _ in range(1, 10)
+    => { attributes = { 0, 0 }, primarySkill = 0, favoredSkill = 0, reputation = 0 }
+  ]
 
   return {
     favoredAttributes = { 'None', 'None' },
