@@ -14,6 +14,10 @@ local Text = require './text'
 
 type Plugin = Plugin.Plugin
 
+-- A record's header, and a subrecord's: a tag and a size, and for a record eight bytes more.
+local RecordHeaderLength = 16
+local SubrecordHeaderLength = 8
+
 local Tes3Tag = Tags.code 'TES3'
 local ScptTag = Tags.code 'SCPT'
 local SchdTag = Tags.code 'SCHD'
@@ -251,20 +255,28 @@ export type StringField = {
 --- Record `index`'s typed string fields, in subrecord order.
 local function stringFields(plugin: Plugin, index: number): { StringField }
   local code = plugin:code(index)
-  local source = plugin:span(index)
-  local out = {}
-  for ordinal, sub in plugin:subrecords(index) do
-    local name = fieldName(code, sub.code)
-    if not name then continue end
+  local source, start, finish = plugin:span(index)
+  local out: { StringField } = {}
+  -- Read where the subrecords are: most aren't strings, and listing them all first was most of
+  -- the work.
+  local position, ordinal = start + RecordHeaderLength, 0
+  while position < finish do
+    local sub = buffer.readu32(source, position)
+    local size = buffer.readu32(source, position + 4)
+    local payload = position + SubrecordHeaderLength
+    local name = fieldName(code, sub)
+    if name then
+      table.insert(out, {
+        name = name,
+        value = Text.decode(source, payload, size, plugin.encoding),
+        tag = Tags.name(sub),
+        subrecord = ordinal,
+        start = position,
+        finish = payload + size,
+      })
+    end
 
-    table.insert(out, {
-      name = name,
-      value = Text.decode(source, sub.payload, sub.size, plugin.encoding),
-      tag = sub.tag,
-      subrecord = ordinal - 1,
-      start = sub.start,
-      finish = sub.finish,
-    })
+    position, ordinal = payload + size, ordinal + 1
   end
 
   return out
@@ -282,12 +294,17 @@ local function fieldId(plugin: Plugin, index: number): string?
     if parts and not parts.header then return nil end
   end
 
-  local source = plugin:span(index)
-  for _, sub in plugin:subrecords(index) do
-    local name = fieldName(code, sub.code)
+  local source, start, finish = plugin:span(index)
+  local position = start + RecordHeaderLength
+  while position < finish do
+    local size = buffer.readu32(source, position + 4)
+    local payload = position + SubrecordHeaderLength
+    local name = fieldName(code, buffer.readu32(source, position))
     if name == 'id' or name == 'info-id' then
-      return Text.decode(source, sub.payload, sub.size, plugin.encoding)
+      return Text.decode(source, payload, size, plugin.encoding)
     end
+
+    position = payload + size
   end
 
   return nil
