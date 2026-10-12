@@ -1221,6 +1221,121 @@ suite.describe('OpenMW saves', function()
     expect(function() save.decodeLuaData(buffer.fromstring(payload), 0, #payload) end).toThrow 'an integer is not valid in Lua serialization format version 0 at offset 1'
     expect(function() save.decodeLuaData(buffer.fromstring '\1\5\1\2', 0, 4) end).toThrow 'unexpected end of serialized Lua data'
   end)
+
+  suite.it('shows a Lua table as a list only when its keys count up from one', function()
+    type Entry = { key: tes3.LuaValue, value: tes3.LuaValue }
+
+    local function entry(key: number, value: string): Entry
+      return { key = { kind = 'number', value = key }, value = { kind = 'string', value = value } }
+    end
+
+    local function shown(...: Entry): unknown
+      return tes3.display.luaValue { kind = 'table', entries = { ... } }
+    end
+
+    expect(shown()).toEqual {}
+    expect(tes3.display.luaValue { kind = 'table' }).toEqual {}
+    expect(shown(entry(1, 'a'))).toEqual { 'a' }
+    expect(shown(entry(1, 'a'), entry(2, 'b'))).toEqual { 'a', 'b' }
+    expect(shown(entry(2, 'a'))).toEqual { ['2'] = 'a' }
+    expect(shown(entry(1, 'a'), entry(3, 'b'))).toEqual { ['1'] = 'a', ['3'] = 'b' }
+    expect(shown(entry(2, 'a'), entry(1, 'b'))).toEqual { ['1'] = 'b', ['2'] = 'a' }
+    expect(shown(entry(1, 'a'), entry(2.5, 'b'))).toEqual { ['1'] = 'a', ['2.5'] = 'b' }
+  end)
+
+  suite.it('shows, collects, and writes back an object list, each reference in its place', function()
+    local list = '\0'
+      .. string.char(0x46)
+      .. u32(16)
+      .. 'objlist'
+      .. string.pack('<I4i4I4i4', 7, 0, 8, -1)
+    local value = save.decodeLuaData(buffer.fromstring(list), 0, #list)
+    expect(save.encodeLuaData(value)).toBe(list)
+    expect(tes3.display.luaValue(value)).toEqual {
+      objlist = { { index = 7, contentFile = 0 }, { index = 8, contentFile = -1 } },
+    }
+
+    expect(tes3.display.luaValue(value, true)).toEqual {
+      objlist = { { index = 7, content_file = 0 }, { index = 8, content_file = -1 } },
+    }
+
+    -- A list of none, and a value with no list at all.
+    local none = '\0' .. string.char(0x46) .. u32(0) .. 'objlist'
+    local empty = save.decodeLuaData(buffer.fromstring(none), 0, #none)
+    expect(empty.refs).toEqual {}
+    expect(tes3.display.luaValue(empty)).toEqual { objlist = {} }
+    expect(tes3.display.luaValue { kind = 'objectList' }).toEqual { objlist = {} }
+    expect(save.luaRefs(empty)).toEqual {}
+    expect(save.luaRefs { kind = 'table' }).toEqual {}
+
+    -- References are added to a list handed in, after what it holds, in the order they're met.
+    local held = { { index = 1, contentFile = 0 } }
+    local nested: tes3.LuaValue = {
+      kind = 'table',
+      entries = {
+        { key = { kind = 'object', ref = { index = 2, contentFile = 0 } }, value = value },
+        {
+          key = { kind = 'string', value = 'last' },
+          value = { kind = 'object', ref = { index = 3, contentFile = 0 } },
+        },
+      },
+    }
+    expect(save.luaRefs(nested, held)).toBe(held)
+    expect(held).toEqual {
+      { index = 1, contentFile = 0 },
+      { index = 2, contentFile = 0 },
+      { index = 7, contentFile = 0 },
+      { index = 8, contentFile = -1 },
+      { index = 3, contentFile = 0 },
+    }
+  end)
+end)
+
+suite.describe('display', function()
+  suite.it('shows a record the typed model can\'t read as why, and its subrecords', function()
+    local plugin = open(record('BOOK', subrecord('ZZZZ', 'ab') .. subrecord('NAME', 'b\0')))
+    expect(tes3.display.display(plugin, 0)).toEqual {
+      record = 0,
+      type = 'BOOK',
+      id = 'b',
+      undecoded = 'Unexpected Tag: BOOK::ZZZZ',
+      subrecords = { 'ZZZZ (2 bytes)', 'NAME (2 bytes)' },
+    }
+  end)
+
+  suite.it('keeps only the CELL references asked for, by where they are in the record', function()
+    local function reference(index: number, name: string): string
+      return subrecord('FRMR', u32(index))
+        .. subrecord('NAME', name .. '\0')
+        .. subrecord('DATA', string.rep('\0', 24))
+    end
+
+    local plugin = open(
+      record(
+        'CELL',
+        subrecord('NAME', 'cell\0')
+          .. subrecord('DATA', string.rep('\0', 12))
+          .. reference(3, 'three')
+          .. reference(1, 'one')
+          .. reference(2, 'two')
+      )
+    )
+
+    --- The ids of the references shown, or nil when none is.
+    local function ids(references: { number }?): { string }?
+      local shown = tes3.display.display(plugin, 0, references).references :: { tes3.Value }?
+      if not shown then return nil end
+
+      return [for entry in shown => entry.id :: string]
+    end
+
+    expect(ids(nil)).toEqual { 'one', 'two', 'three' }
+    expect(ids { 0 }).toEqual { 'three' }
+    expect(ids { 2, 1 }).toEqual { 'one', 'two' }
+    expect(ids { 0, 0, 2 }).toEqual { 'two', 'three' }
+    expect(ids {}).toBeNil()
+    expect(ids { 9 }).toBeNil()
+  end)
 end)
 
 --- Where this file is, from its chunk name: the folder the suite and its asset are in.
