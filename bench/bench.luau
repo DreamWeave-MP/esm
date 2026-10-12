@@ -574,6 +574,12 @@ do
     return #(decoded.entries :: { unknown })
   end)
 
+  local decoded = tes3.save.decodeLuaData(bytes, 0, buffer.len(bytes))
+
+  workload('collect the references of a Lua payload of 2,000 entries', 400, function(): number
+    return #tes3.save.luaRefs(decoded)
+  end)
+
   workload('display a Lua payload of 2,000 entries', 2000, function(): number
     local shown = tes3.display.luaPayload(bytes, 0, buffer.len(bytes), true) :: { [string]: unknown }
     local count = 0
