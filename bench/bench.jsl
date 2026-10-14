@@ -3,7 +3,7 @@
 -- The TES3 spine, timed through `@tes3`: framing, saving, record identity, the typed codec, CELL
 -- references, LAND terrain, write-back, and OpenMW's Lua payloads. One line per workload,
 -- `name<TAB>seconds per call`, the median of seven batches. Run on a release build:
---   jess run --package . --package-path .. --capability filesystem.read bench/bench.luau [filter]
+--   jess run --package . --package-path .. --capability filesystem.read bench/bench.jsl [filter]
 local tes3 = require '@tes3'
 
 -- A build without the verified toolchain runs Luau slower than a release does, so a number from

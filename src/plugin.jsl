@@ -314,7 +314,7 @@ function Plugin.span(self: Plugin, index: number): (buffer, number, number)
   return self.source, start, start + RecordHeaderLength + buffer.readu32(self.source, start + 4)
 end
 
---- Record `index`'s tag as a number (see `tags.luau`).
+--- Record `index`'s tag as a number (see `tags.jsl`).
 function Plugin.code(self: Plugin, index: number): number
   local entry = slot(self, index)
   local body = self.bodies[entry]
@@ -1734,7 +1734,7 @@ function Plugin.encode(self: Plugin, value: Value): buffer
 end
 
 --- Writes `value` over record `index` (of the same type), re-encoding only the subrecords that
---- changed (`writeback.luau`); whether anything did.
+--- changed (`writeback.jsl`); whether anything did.
 function Plugin.set(self: Plugin, index: number, value: Value): boolean
   local code = self:code(index)
   if not Decode.typeName(Tags.name(code)) then

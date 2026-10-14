@@ -9,7 +9,7 @@ when set, strings NUL-terminated, the header's second word zero. Missing fields 
 type's defaults, nested structs included; a list replaces the default list whole.
 
 Encoding normalizes what vanilla data spells differently (unterminated strings, padding, reference
-order), so a decoded record doesn't always encode to its own bytes; `writeback.luau` keeps the
+order), so a decoded record doesn't always encode to its own bytes; `writeback.jsl` keeps the
 original subrecords an edit didn't change.
 ]]
 

@@ -1,6 +1,6 @@
 # TES3 benchmarks
 
-`bench/bench.luau` times the spine through `@tes3`, the way a tool reaches it: framing a content
+`bench/bench.jsl` times the spine through `@tes3`, the way a tool reaches it: framing a content
 file with and without a filter, saving, record identity, subrecords and string fields, profile
 checks, the typed codec over a record of every type, CELL references, LAND terrain, write-back,
 and OpenMW's Lua payloads. The inputs are the suite's `all_types.esp` and content built from it:
@@ -12,7 +12,7 @@ is wrong.
 
 ```sh
 jess run --package jpk/tes3 --package-path jpk --capability filesystem.read \
-  jpk/tes3/bench/bench.luau [filter]
+  jpk/tes3/bench/bench.jsl [filter]
 ```
 
 ## The move onto l3i 2.0, base against head
