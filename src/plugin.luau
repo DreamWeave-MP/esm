@@ -391,7 +391,7 @@ function Plugin.subrecords(self: Plugin, index: number): { Subrecord }
     position += SubrecordHeaderLength + buffer.readu32(source, position + 4)
   end
 
-  local out: { Subrecord } = table.create(count)
+  local out = table.create(count) :: { Subrecord }
   position = first
   for ordinal = 1, count do
     local tag = buffer.readu32(source, position)
