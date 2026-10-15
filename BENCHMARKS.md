@@ -101,64 +101,66 @@ behind them, and are the size of this machine's noise.
 ## Which modules are native, and why
 
 Jess compiles to machine code only what is marked (`--!native` on a module, `@native` on one
-function), and marking costs at every load: with every module marked, compiling them was 73% of
-what requiring `@tes3` cost past starting the process (0.084 s of 0.115 s). So a module is marked
-only where a row below needs it, and a large module only on the functions the row spends its
-time in.
+function), and every load pays for what is marked. A module carries `--!native` when a row below
+spends its time there and the module is small (12 KB or less); a larger module carries `@native`
+on the functions the row spends its time in, and nothing else.
 
 Measured 2026-10-14 with `jess 0.1.0`, the verified release build of jess `07c38cb` on l3i
-2.0.3, on the i7-10870H, the one-minute load between 1.08 and 1.31 at the start of each round.
-Each column is the median of three fresh runs of `bench/bench.jsl`, each run's row the median of
-its seven batches. Which functions a row spends its time in comes from `jess run --profile` of
-that row alone, unmarked. The load cost is a fresh `jess run --package jpk/tes3 --package-path
-jpk` of a script that only requires `@tes3`, median of five after one warm-up; the same command
-requiring nothing takes 0.049 s.
+2.0.3, on the i7-10870H, the one-minute load 1.15 and 0.78 at the start of the two
+sessions. In each session the bench ran alternately on this package and on a copy of it with
+every module marked, three fresh runs of `bench/bench.jsl` each, every run's row the median of
+its batches; a column is the median of the three, and a ratio is against the all-marked runs of
+the same session. Which functions a row spends its time in comes from `jess run --profile` of
+that row alone, unmarked. The load cost is a fresh `jess run --package <this package>
+--package-path jpk` of a script that only requires `@tes3`, the two sides alternating, the
+median of five each after one warm-up.
 
-| | All marked | Unmarked | Final |
-| --- | ---: | ---: | ---: |
-| Requiring `@tes3` | 0.164 s | 0.080 s | 0.097 s |
+| Requiring `@tes3` | All marked | This state |
+| --- | ---: | ---: |
+| Unmarked | 0.155 s | 0.078 s |
+| Final | 0.156 s | 0.095 s |
 
-| Row | All marked (ms) | Unmarked (ms) | Final (ms) | Final / all marked |
+| Row | All marked (ms) | Unmarked / all marked | Final (ms) | Final / all marked |
 | --- | ---: | ---: | ---: | ---: |
-| open | 0.9700 | 1.355 | 0.9481 | 0.977× |
-| open, keeping CELL headers and LAND | 0.9001 | 2.323 | 0.9014 | 1.001× |
-| open, keeping every record | 2.444 | 7.743 | 2.395 | 0.980× |
-| save, untouched | 1.113 | 1.837 | 1.063 | 0.955× |
-| save, one record in sixteen edited | 1.582 | 2.252 | 1.599 | 1.011× |
-| check a round trip | 4.288 | 5.517 | 4.401 | 1.026× |
-| tag and id of every record | 6.651 | 18.50 | 6.361 | 0.956× |
-| id span of every record | 3.562 | 12.25 | 3.350 | 0.941× |
-| subrecords of every record | 14.89 | 26.70 | 14.38 | 0.966× |
-| string fields of every record | 23.84 | 51.34 | 23.27 | 0.976× |
-| object keys | 14.10 | 28.88 | 13.65 | 0.968× |
-| validate as tes3 | 10.60 | 33.69 | 9.938 | 0.938× |
-| retain every other record and save | 2.139 | 3.733 | 2.079 | 0.972× |
-| replace a subrecord of 1,000 records | 3.142 | 5.387 | 3.030 | 0.964× |
-| delete no subrecord of 1,000 records by tag | 0.2982 | 0.8081 | 0.2862 | 0.960× |
-| decode a record of every type | 0.3456 | 0.6709 | 0.4013 | **1.161×** |
-| encode a record of every type | 0.7125 | 1.128 | 0.8092 | **1.136×** |
-| display a record of every type | 0.6227 | 1.339 | 0.6857 | **1.101×** |
-| set an edited NPC_, there and back | 0.3175 | 0.6672 | 0.3942 | **1.241×** |
-| decode a CELL of 2,000 references | 2.694 | 5.597 | 2.595 | 0.963× |
-| encode a CELL of 2,000 references | 3.126 | 6.259 | 3.721 | **1.190×** |
-| group a CELL of 2,000 references | 0.2866 | 0.7469 | 0.2792 | 0.974× |
-| set a moved reference in a CELL of 500, there and back | 12.50 | 24.47 | 12.99 | 1.039× |
-| delete 200 references of a CELL of 2,000 | 1.895 | 3.404 | 1.837 | 0.969× |
-| read 64 LANDs as buffers | 1.982 | 10.84 | 1.924 | 0.971× |
-| read the heights of 64 LANDs | 1.546 | 10.26 | 1.547 | 1.001× |
-| decode 64 LANDs | 2.041 | 2.173 | 1.966 | 0.963× |
-| write the heights of a LAND, there and back | 1.599 | 1.969 | 1.576 | 0.986× |
-| encode a Lua payload of 2,000 entries | 0.8589 | 1.484 | 0.8254 | 0.961× |
-| decode a Lua payload of 2,000 entries | 0.8037 | 1.540 | 0.7699 | 0.958× |
-| collect the references of a Lua payload of 2,000 entries | 0.1960 | 0.2710 | 0.1894 | 0.966× |
-| display a Lua payload of 2,000 entries | 1.386 | 2.413 | 1.358 | 0.979× |
+| open | 0.8587 | **1.396×** | 0.8806 | 1.025× |
+| open, keeping CELL headers and LAND | 0.8720 | **2.637×** | 0.8870 | 1.017× |
+| open, keeping every record | 2.308 | **3.179×** | 2.299 | 0.996× |
+| save, untouched | 0.8370 | **1.866×** | 0.8737 | 1.044× |
+| save, one record in sixteen edited | 1.354 | **1.452×** | 1.326 | 0.980× |
+| check a round trip | 3.811 | **1.250×** | 3.638 | 0.954× |
+| tag and id of every record | 6.250 | **2.758×** | 6.178 | 0.989× |
+| id span of every record | 3.271 | **3.492×** | 3.397 | 1.038× |
+| subrecords of every record | 12.21 | **1.844×** | 12.45 | 1.019× |
+| string fields of every record | 20.55 | **2.313×** | 20.68 | 1.006× |
+| object keys | 12.48 | **2.088×** | 12.75 | 1.022× |
+| validate as tes3 | 9.562 | **3.206×** | 9.714 | 1.016× |
+| retain every other record and save | 1.921 | **1.760×** | 1.942 | 1.011× |
+| replace a subrecord of 1,000 records | 2.739 | **1.817×** | 2.677 | 0.978× |
+| delete no subrecord of 1,000 records by tag | 0.2828 | **2.698×** | 0.2859 | 1.011× |
+| decode a record of every type | 0.3169 | **1.949×** | 0.3857 | **1.217×** |
+| encode a record of every type | 0.6675 | **1.572×** | 0.7562 | **1.133×** |
+| display a record of every type | 0.5762 | **2.082×** | 0.6549 | **1.136×** |
+| set an edited NPC_, there and back | 0.2863 | **2.060×** | 0.3826 | **1.336×** |
+| decode a CELL of 2,000 references | 2.386 | **2.190×** | 2.362 | 0.990× |
+| encode a CELL of 2,000 references | 2.754 | **1.985×** | 3.544 | **1.287×** |
+| group a CELL of 2,000 references | 0.2512 | **2.775×** | 0.2487 | 0.990× |
+| set a moved reference in a CELL of 500, there and back | 11.28 | **1.955×** | 12.09 | **1.072×** |
+| delete 200 references of a CELL of 2,000 | 1.694 | **1.841×** | 1.661 | 0.980× |
+| read 64 LANDs as buffers | 1.806 | **5.312×** | 1.803 | 0.998× |
+| read the heights of 64 LANDs | 1.455 | **6.381×** | 1.444 | 0.992× |
+| decode 64 LANDs | 1.894 | **1.057×** | 1.879 | 0.992× |
+| write the heights of a LAND, there and back | 1.530 | **1.231×** | 1.520 | 0.993× |
+| encode a Lua payload of 2,000 entries | 0.7818 | **1.689×** | 0.7893 | 1.010× |
+| decode a Lua payload of 2,000 entries | 0.7430 | **1.864×** | 0.7311 | 0.984× |
+| collect the references of a Lua payload of 2,000 entries | 0.1805 | **1.330×** | 0.1840 | 1.019× |
+| display a Lua payload of 2,000 entries | 1.268 | **1.735×** | 1.254 | 0.989× |
 
 What carries the directive, and the rows that earned it:
 
 - `tags`, `text`, `writer`, whole: tag names, the string decode (`plainUntil`), and the byte
   writer, under every open, id, string-field, decode, and encode row.
 - `records`, whole: tag and id, id span, object keys, string fields.
-- `land`, whole: reading 64 LANDs as buffers (5.5x unmarked) and their heights (6.6x), and the
+- `land`, whole: reading 64 LANDs as buffers and their heights (5.5x and 6.6x unmarked), and the
   height write.
 - `references`, whole: decoding a CELL of 2,000 references.
 - `writeback`, whole: the NPC_ edit and the moved reference, there and back.
@@ -176,12 +178,14 @@ What carries the directive, and the rows that earned it:
 - `schema`, by function: `flagText`, `base64` (decoding 64 LANDs).
 - `init` is unmarked.
 
-The five rows still more than 5% slower than all marked decode, encode, or display one record of
-each type, and their time is a long tail of per-type code no profile line dominates. Marking
-`decode`, `encode`, and `display` whole brings every row within 5% of all marked, and costs
-0.151 s to require `@tes3` against 0.097 s. On the three load-order tools that load `@tes3`
-(the jess side of `tools/bench/showcase.jsl`, `--no-native`, median of five), all marked ran
-tes3merge in 1.00 s, S3LightFixes in 0.86 s, and Merged Lands in 3.44 s; the three modules whole
-1.02 s, 0.83 s, and 3.45 s; and this 0.95 s, 0.81 s, and 3.42 s. So they stay marked by
-function: a run that decodes every record of a plugin pays up to those rows' ratio on that part
-of its work, and every run that requires `@tes3` pays 0.05 s less.
+The rows still more than 5% slower than all marked decode, encode, or display one record of each
+type, or edit one there and back, and their time is a long tail of per-type code no profile line
+dominates: marking more of `decode` and `encode` by function (`sub`, `numberAt`, `u8List`,
+`nameOf`, the next handler) moved none of them. Marking `decode`, `encode`, and `display` whole
+brought every row within 5% of all marked in a session of its own, and made requiring `@tes3`
+0.151 s against 0.164 s all marked and 0.097 s for this state in that session: those three are
+most of what marking costs. The three load-order tools that load `@tes3` ran within this
+machine's drift of each other either way (tes3merge 1.00 s all marked, 1.02 s with the three
+whole, 0.95 s like this, in consecutive sessions), so the per-type rows give and the load wins:
+a run that decodes every record of a plugin pays up to those rows' ratio on that part of its
+work, and every run that requires `@tes3` pays about 0.05 s less.
