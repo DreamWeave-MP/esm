@@ -3,6 +3,7 @@
 -- tes3's own cases: jess-plugin's raw spine tests and jess-omwaddon's codec edges, on bytes
 -- built here, and jess's script API contracts for terrain, record metadata, and building, on
 -- jess-omwaddon's plugin with a record of every type (`assets/all_types.esp`).
+local fs = require '@dream/fs'
 local tes3 = require '@tes3'
 local test = require '@jess/test'
 local expect = test.expect
@@ -1349,7 +1350,10 @@ end
 
 --- jess-omwaddon's plugin with a record of every type: what jess's contract fixtures opened.
 local function allTypes(): tes3.Plugin
-  return tes3.open(assert(jess.fs.readBuffer(`{here()}/assets/all_types.esp`)))
+  local fileBytes, problem = fs.readFile(`{here()}/assets/all_types.esp`)
+  if not fileBytes then error(problem, 0) end
+
+  return tes3.open(fileBytes)
 end
 
 --- FNV-1a (32 bits) of a buffer's bytes, as the contracts' expected results spell a buffer.
@@ -1474,7 +1478,8 @@ suite.describe('LAND terrain', function()
   end)
 
   suite.it('writes a terrain back without changing a byte', function()
-    local bytes = assert(jess.fs.readBuffer(`{here()}/assets/all_types.esp`))
+    local bytes, problem = fs.readFile(`{here()}/assets/all_types.esp`)
+    if not bytes then error(problem, 0) end
     local plugin = tes3.open(bytes)
     local land = firstOf(plugin, 'LAND')
     tes3.land.write(plugin, land, tes3.land.read(plugin, land))
@@ -1514,7 +1519,8 @@ suite.describe('LAND terrain', function()
   end)
 
   suite.it('leaves every other record\'s bytes alone', function()
-    local bytes = assert(jess.fs.readBuffer(`{here()}/assets/all_types.esp`))
+    local bytes, problem = fs.readFile(`{here()}/assets/all_types.esp`)
+    if not bytes then error(problem, 0) end
     local plugin, original = tes3.open(bytes), tes3.open(bytes)
     local land = firstOf(plugin, 'LAND')
     local colors = buffer.create(Vertices * 3)

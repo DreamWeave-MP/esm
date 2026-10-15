@@ -4,6 +4,7 @@
 -- references, LAND terrain, write-back, and OpenMW's Lua payloads. One line per workload,
 -- `name<TAB>seconds per call`, the median of seven batches. Run on a release build:
 --   jess run --package . --package-path .. --capability filesystem.read bench/bench.jsl [filter]
+local fs = require '@dream/fs'
 local tes3 = require '@tes3'
 
 -- A build without the verified toolchain runs Luau slower than a release does, so a number from
@@ -101,7 +102,8 @@ local function word(): string return Words[nextRandom() % #Words + 1] end
 
 --[[ The inputs ]]
 
-local fixture = assert(jess.fs.readBuffer(`{root()}/tests/assets/all_types.esp`))
+local fixture, problem = fs.readFile(`{root()}/tests/assets/all_types.esp`)
+if not fixture then error(problem, 0) end
 local every = tes3.open(fixture)
 
 --- A content file: the fixture's record of every type forty times over, and 13,000 small objects
