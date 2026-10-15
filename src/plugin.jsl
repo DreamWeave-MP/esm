@@ -1,5 +1,4 @@
 --!strict
---!native
 -- SPDX-License-Identifier: MIT OR Apache-2.0
 
 --[[
@@ -124,6 +123,7 @@ end
 
 --- Checks the subrecords in `[from, to)` of `source` fit; returns where the first whose tag
 --- `stop` names starts (or `to`), and the subrecord count before it.
+@native
 local function walk(
   source: buffer,
   from: number,
@@ -191,6 +191,7 @@ local function cutCell(source: buffer, start: number, finish: number, parts: num
   return out
 end
 
+@native
 local function parse(source: buffer, options: OpenOptions?): Plugin
   local encoding = options and options.encoding or 'win1252'
   Text.label(encoding)
@@ -305,6 +306,7 @@ end
 function Plugin.count(self: Plugin): number return #self.starts end
 
 --- Where record `index`'s bytes are: the buffer, where they start, and where they end.
+@native
 function Plugin.span(self: Plugin, index: number): (buffer, number, number)
   local entry = slot(self, index)
   local body = self.bodies[entry]
@@ -315,6 +317,7 @@ function Plugin.span(self: Plugin, index: number): (buffer, number, number)
 end
 
 --- Record `index`'s tag as a number (see `tags.jsl`).
+@native
 function Plugin.code(self: Plugin, index: number): number
   local entry = slot(self, index)
   local body = self.bodies[entry]
@@ -324,6 +327,7 @@ function Plugin.code(self: Plugin, index: number): number
 end
 
 --- Record `index`'s tag: `LIGH`.
+@native
 function Plugin.tag(self: Plugin, index: number): string return Tags.name(self:code(index)) end
 
 --- The record header's flags (bytes 12 to 16).
@@ -340,6 +344,7 @@ end
 
 --- Where record `index` was in the original bytes, header included: `start, finish`. An inserted
 --- record's range is empty, where it was put.
+@native
 function Plugin.range(self: Plugin, index: number): (number, number)
   local entry = slot(self, index)
   local start = self.starts[entry]
@@ -380,6 +385,7 @@ function Plugin.hasPartialRecords(self: Plugin): boolean
 end
 
 --- Record `index`'s subrecords, in order.
+@native
 function Plugin.subrecords(self: Plugin, index: number): { Subrecord }
   local source, start, finish = self:span(index)
   local first = start + RecordHeaderLength
@@ -412,6 +418,7 @@ end
 
 --- The first subrecord of record `index` with tag `code` (a number): where its payload starts
 --- and its size, or nil.
+@native
 function Plugin.findSubrecord(self: Plugin, index: number, code: number): (buffer?, number, number)
   local source, start, finish = self:span(index)
   local position = start + RecordHeaderLength
@@ -429,6 +436,7 @@ end
 
 --- The plugin's bytes: untouched records copied from the original, edited ones rebuilt, deleted
 --- ones left out. Runs of untouched records copy in one go.
+@native
 function Plugin.save(self: Plugin): buffer
   local {source, starts, bodies} = self
   local total = 0
@@ -482,6 +490,7 @@ local function checkPayload(payload: buffer, offset: number, length: number)
   walk(payload, offset, offset + length, nil)
 end
 
+@native
 local function asBuffer(value: buffer | string): buffer
   if type(value) == 'string' then return buffer.fromstring(value) end
 
@@ -571,6 +580,7 @@ function Plugin.delete(self: Plugin, index: number)
 end
 
 --- Keeps only the records `keep` accepts (called with each 0-based index, in order).
+@native
 function Plugin.retain(self: Plugin, keep: (index: number) -> boolean)
   touch(self)
   local starts: { number }, bodies: { buffer | false }, parts: { number } = {}, {}, {}
@@ -588,6 +598,7 @@ end
 --- One subrecord's bytes, header included, as `(buffer, start, finish)` or replaced.
 type Piece = { source: buffer, start: number, finish: number }
 
+@native
 local function pieces(self: Plugin, index: number): ({ Piece }, buffer, number)
   local source, start, finish = self:span(index)
   local out = {}
@@ -601,6 +612,7 @@ local function pieces(self: Plugin, index: number): ({ Piece }, buffer, number)
   return out, source, start
 end
 
+@native
 local function rebuild(
   self: Plugin,
   index: number,
@@ -626,6 +638,7 @@ local function subrecordOutOfBounds(self: Plugin, index: number): never
   return fail(finish, 'subrecord index out of bounds')
 end
 
+@native
 local function newPiece(header: buffer, at: number, payload: buffer): Piece
   local length = buffer.len(payload)
   local out = buffer.create(SubrecordHeaderLength + length)
@@ -636,6 +649,7 @@ local function newPiece(header: buffer, at: number, payload: buffer): Piece
 end
 
 --- Replaces subrecord `sub` (0-based) of record `index` and rebuilds the record.
+@native
 function Plugin.replaceSubrecord(self: Plugin, index: number, sub: number, payload: buffer | string)
   touch(self)
   local list, header, at = pieces(self, index)
@@ -685,6 +699,7 @@ function Plugin.deleteSubrecords(self: Plugin, index: number, subs: { number }):
 end
 
 --- Deletes every subrecord of record `index` with tag `tag`; returns how many.
+@native
 function Plugin.deleteSubrecordsByTag(self: Plugin, index: number, tag: string): number
   touch(self)
   local code = Tags.code(tag)
@@ -708,6 +723,7 @@ export type CellGroups = {
   references: { { number } },
 }
 
+@native
 local function codesOf(self: Plugin, index: number): { number }
   local source, start, finish = self:span(index)
   local codes = {}
@@ -732,6 +748,7 @@ local function movedStart(codes: { number }, frmr: number): number
 end
 
 --- A CELL's subrecords grouped by reference, or nil for another record.
+@native
 function Plugin.cellGroups(self: Plugin, index: number): CellGroups?
   if self:code(index) ~= CellTag then return nil end
 
@@ -785,6 +802,7 @@ function Plugin.cellHeaderSubrecords(self: Plugin, index: number): number?
 end
 
 --- Deletes the CELL references at `refs` (0-based) and updates NAM0; returns how many went.
+@native
 function Plugin.deleteCellReferences(self: Plugin, index: number, refs: { number }): number
   touch(self)
   local groups = self:cellGroups(index)
@@ -879,6 +897,7 @@ local function headerIsUtf8(self: Plugin): boolean
 end
 
 --- Bytes as UTF-8, invalid sequences replaced by U+FFFD the way Rust's `from_utf8_lossy` does.
+@native
 local function lossyUtf8(text: string): string
   if utf8.len(text) then return text end
 
@@ -1544,6 +1563,7 @@ end
 
 --- Adds record `index`'s vanilla-format problems to `out`. It reads the subrecords' tags where
 --- they are: a plugin is checked a record at a time, and nearly every one has nothing to say.
+@native
 local function vanillaDiagnostics(self: Plugin, index: number, out: { Diagnostic })
   local code = self:code(index)
   local allowed = VanillaSets[code]
@@ -1622,6 +1642,7 @@ end
 --- structure every engine relies on (a readable TES3 header first and nowhere else, well-formed
 --- masters, tags that are text); `tes3` adds what vanilla Morrowind doesn't know, `omwaddon` what
 --- OpenMW's content loader refuses or skips (`ESMStore::load` in `mwworld/esmstore.cpp`).
+@native
 function Plugin.validateProfile(self: Plugin, profile: Profile): { Diagnostic }
   checks(profile)
   local out: { Diagnostic } = {}

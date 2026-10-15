@@ -1,5 +1,4 @@
 --!strict
---!native
 -- SPDX-License-Identifier: MIT OR Apache-2.0
 
 --[[
@@ -236,6 +235,7 @@ local function need(cursor: Cursor, length: number): number
   return at
 end
 
+@native
 local function f64s(cursor: Cursor, count: number): { number }
   local values = table.create(count, 0)
   for index = 1, count do
@@ -256,6 +256,7 @@ end
 
 local decodeValue: (cursor: Cursor) -> LuaValue
 
+@native
 local function decodeUserdata(cursor: Cursor, tag: number): LuaValue
   local compact = bit32.btest(tag, CustomCompactFlag)
   local dataLength: number = if compact
@@ -296,7 +297,7 @@ local function decodeUserdata(cursor: Cursor, tag: number): LuaValue
   }
 end
 
-decodeValue = function(cursor: Cursor): LuaValue
+decodeValue = @native function(cursor: Cursor): LuaValue
   local tag = buffer.readu8(cursor.source, need(cursor, 1))
   if bit32.btest(tag, CustomCompactFlag + CustomFullFlag) then
     return decodeUserdata(cursor, tag)
@@ -404,6 +405,7 @@ end
 local VectorTags: { [string]: number } =
   { vec2 = 0x10, vec3 = 0x11, transformM = 0x12, transformQ = 0x13, vec4 = 0x14 }
 
+@native
 local function encodeValue(value: LuaValue, out: { string })
   local kind = value.kind
   if kind == 'nil' then
@@ -468,6 +470,7 @@ local function encodeValue(value: LuaValue, out: { string })
 end
 
 --- Whether a value holds an integer anywhere in it.
+@native
 local function hasInteger(value: LuaValue): boolean
   if value.kind == 'integer' then return true end
 
@@ -504,6 +507,7 @@ local function encodeLuaData(value: LuaValue, version: number?): string
 end
 
 --- Every object reference in a Lua value, in order.
+@native
 local function luaRefs(value: LuaValue, out: { LuaRef }?): { LuaRef }
   local refs = out or {}
   local {entries, ref: object, refs: objects} = value

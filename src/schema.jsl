@@ -1,5 +1,4 @@
 --!strict
---!native
 -- SPDX-License-Identifier: MIT OR Apache-2.0
 
 --[[
@@ -628,6 +627,7 @@ local Flags = table.freeze {
 local FlagTexts: { [Flags]: { [number]: string } } = {}
 
 --- `bits` as bitflags writes them: `A | B | 0x1c0`.
+@native
 local function flagText(set: Flags, bits: number): string
   local cache = FlagTexts[set]
   if not cache then
@@ -714,6 +714,7 @@ end
 
 --- Standard padded base64 of `prefix` (a u32 length, when given) followed by `length` bytes of
 --- `source` at `offset`: how jess-omwaddon spells a byte blob, which it writes with its length.
+@native
 local function base64(source: buffer, offset: number, length: number, prefix: number?): string
   if not prefix then return bytes.toBase64(source, offset, length) end
 

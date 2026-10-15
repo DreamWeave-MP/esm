@@ -1,5 +1,4 @@
 --!strict
---!native
 -- SPDX-License-Identifier: MIT OR Apache-2.0
 
 --[[
@@ -61,6 +60,7 @@ local function expect(source: buffer, position: number, finish: number, value: n
 end
 
 --- A length-prefixed string, cut at its first NUL (`String::load`).
+@native
 local function text(
   source: buffer,
   position: number,
@@ -154,7 +154,7 @@ end
 
 --- A string subrecord into `field`.
 local function stringField(field: string): Handler
-  return function(source, position, finish, record, encoding)
+  return @native function(source, position, finish, record, encoding)
     local value, next = text(source, position, finish, encoding)
     record[field] = value
     return next
@@ -1848,6 +1848,7 @@ local function finite(vector: { number })
 end
 
 --- One reference's subrecords after its FRMR, up to its DATA or DELE (`Reference::load`).
+@native
 local function reference(
   source: buffer,
   position: number,
@@ -1943,6 +1944,7 @@ local function reference(
   return ref, position
 end
 
+@native
 local function cell(source: buffer, start: number, finish: number, encoding: string): Value
   local record: Value = { name = '', data = { flags = '', grid = { 0, 0 } } }
   local flags = buffer.readu32(source, start + 12)
@@ -2057,6 +2059,7 @@ end
 
 --[[ LAND ]]
 
+@native
 local function landscape(source: buffer, start: number, finish: number): Value
   local flags = buffer.readu32(source, start + 12)
   local record: Value = {
@@ -2501,6 +2504,7 @@ special(
 
 --- Decodes the record whose bytes are `[start, finish)` of `source`, its text in `encoding`. Nil
 --- for a tag no record type has.
+@native
 local function decode(source: buffer, start: number, finish: number, encoding: string): Value?
   local entry = ByCode[buffer.readu32(source, start)]
   if not entry then return nil end

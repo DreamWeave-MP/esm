@@ -1,5 +1,4 @@
 --!strict
---!native
 -- SPDX-License-Identifier: MIT OR Apache-2.0
 
 --[[
@@ -27,6 +26,7 @@ type Writer = Writer.Writer
 
 local function fail(message: string): never error(message, 0) end
 
+@native
 local function isList(value: unknown): boolean
   if type(value) ~= 'table' then return false end
 
@@ -35,6 +35,7 @@ local function isList(value: unknown): boolean
 end
 
 --- `value` laid over `default`: missing fields take the default's, structs merge field by field.
+@native
 local function merge(default: unknown, value: unknown): unknown
   if value == nil then return default end
 
@@ -130,6 +131,7 @@ local function codeOf(name: string): number
   return code
 end
 
+@native
 local function tag(writer: Writer, name: string) Writer.u32(writer, codeOf(name)) end
 
 --- Text in the code page, cut at its first NUL (`Writer::encode`).
@@ -143,6 +145,7 @@ local function encodeText(value: string, encoding: string): string
 end
 
 --- A length-prefixed, NUL-terminated string (`save_string`).
+@native
 local function writeString(writer: Writer, value: string, encoding: string)
   if value == '' then
     Writer.u32(writer, 1)
@@ -192,6 +195,7 @@ local function opt(writer: Writer, name: string, value: string, encoding: string
   if value ~= '' then sub(writer, name, value, encoding) end
 end
 
+@native
 local function header(writer: Writer, name: string, size: number)
   Writer.u32Pair(writer, codeOf(name), size)
 end
@@ -1109,6 +1113,7 @@ local persistent = References.persistent
 
 --- The three f32s of the list `from[key]`, which `path` and then `within` lead to. A reference
 --- has two, and a cell thousands of references: their names are built only to refuse one.
+@native
 local function vector(writer: Writer, from: Value, key: string, path: string, within: string)
   local items = listOf(from, key, path)
   local first, second, third = items[1], items[2], items[3]

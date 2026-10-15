@@ -1,5 +1,4 @@
 --!strict
---!native
 -- SPDX-License-Identifier: MIT OR Apache-2.0
 
 --[[
@@ -84,6 +83,7 @@ local function unsetFloat(value: unknown): boolean
 end
 
 --- Whether a value is noise: missing, empty, or the engine's FLT_MAX "unset".
+@native
 local function emptyOrUnset(value: unknown): boolean
   if value == nil then return true end
 
@@ -107,6 +107,7 @@ end
 
 local tidy: (value: unknown) -> unknown
 
+@native
 local function tidyField(key: string, value: unknown): unknown
   if type(value) ~= 'table' or not isList(value :: { [unknown]: unknown }) then return value end
 
@@ -143,7 +144,7 @@ end
 --- Names pairs and stat arrays, drops empty or unset fields, trims trailing NULs, and turns a
 --- non-finite number (JSON's null) into nil. Tables are reshaped in place: `value` is the caller's
 --- to give up (a freshly decoded record), and copying every table of it again was most of a dump.
-tidy = function(value: unknown): unknown
+tidy = @native function(value: unknown): unknown
   if type(value) == 'string' then
     if string.byte(value, -1) ~= 0 then return value end
 
@@ -214,6 +215,7 @@ local function listIndex(key: LuaValue): number?
   return nil
 end
 
+@native
 local function lossy(text: string): string return Plugin.lossyUtf8(text) end
 
 local luaValue: (value: LuaValue, keepKeys: boolean?) -> unknown
@@ -236,7 +238,7 @@ local Vectors: { [string]: string } = {
 --- A decoded Lua value: tables keyed 1 to n become lists, other tables objects with text keys
 --- (camelCase unless `keepKeys`, as a save's dump keeps them), and userdata a one-key table naming
 --- its type.
-luaValue = function(value: LuaValue, keepKeys: boolean?): unknown
+luaValue = @native function(value: LuaValue, keepKeys: boolean?): unknown
   local kind = value.kind
   if kind == 'nil' then return nil end
 
