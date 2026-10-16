@@ -225,7 +225,7 @@ end
 
 --- An OpenMW Lua payload: a table of `count` entries of every kind of value.
 local function luaTable(count: number): tes3.LuaValue
-  local entries = {}
+  local entries: { { key: tes3.LuaValue, value: tes3.LuaValue } } = {}
 
   for index = 1, count do
     local kind = index % 5
@@ -484,7 +484,7 @@ end
 --[[ LAND terrain ]]
 
 do
-  local parts = {}
+  local parts: { string } = {}
 
   for index = 0, 63 do
     table.insert(parts, landRecord(index % 8, index // 8))

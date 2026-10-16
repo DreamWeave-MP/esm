@@ -232,11 +232,11 @@ end
 local function part(terrain: { [string]: unknown }, name: string): buffer?
   local value = terrain[name]
   if not value then return nil end
-  if type(value) ~= 'buffer' then fail(`LAND {name} must be a buffer, not {type(value)}`) end
+  if type(value) ~= 'buffer' then return fail(`LAND {name} must be a buffer, not {type(value)}`) end
 
   local length = PartLengths[name]
   if buffer.len(value) ~= length then
-    fail(`LAND {name} must be {length} bytes, not {buffer.len(value)}`)
+    return fail(`LAND {name} must be {length} bytes, not {buffer.len(value)}`)
   end
 
   return value
@@ -246,7 +246,7 @@ end
 local function numberOf(terrain: { [string]: unknown }, name: string): number?
   local value = terrain[name]
   if value == nil then return nil end
-  if type(value) ~= 'number' then fail(`LAND {name} must be a number, not {type(value)}`) end
+  if type(value) ~= 'number' then return fail(`LAND {name} must be a number, not {type(value)}`) end
 
   return value
 end
@@ -255,15 +255,15 @@ end
 local function gridOf(terrain: { [string]: unknown }): { number }?
   local grid = terrain.grid
   if grid == nil then return nil end
-  if type(grid) ~= 'table' then fail 'LAND grid must be { x, y }' end
+  if type(grid) ~= 'table' then return fail 'LAND grid must be { x, y }' end
 
   local cell = grid :: { unknown }
   local column, row = cell[1], cell[2]
   if #cell ~= 2 or type(column) ~= 'number' or type(row) ~= 'number' then
-    fail 'LAND grid must be { x, y }'
+    return fail 'LAND grid must be { x, y }'
   end
 
-  if column % 1 ~= 0 or row % 1 ~= 0 then fail 'LAND grid must be { x, y }' end
+  if column % 1 ~= 0 or row % 1 ~= 0 then return fail 'LAND grid must be { x, y }' end
 
   return { column, row }
 end

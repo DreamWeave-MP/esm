@@ -758,7 +758,7 @@ suite.describe('typed records', function()
     end
 
     -- tes3.encode raises on a value its record type can't hold; what it says is what's checked.
-    local ok, problem = pcall(tes3.encode, value)
+    local ok, problem = pcall(tes3.encode, value, nil)
     return if ok then '' else tostring(problem)
   end
 
@@ -1210,9 +1210,9 @@ suite.describe('OpenMW saves', function()
   suite.it('writes a value of its own in the oldest format that holds it', function()
     local plain: tes3.LuaValue = { kind = 'number', value = 1.5 }
     local whole: tes3.LuaValue = { kind = 'integer', value = 3i }
-    expect(string.byte(save.encodeLuaData(plain), 1)).toBe(0)
-    expect(string.byte(save.encodeLuaData(whole), 1)).toBe(1)
-    expect(string.byte(save.encodeLuaData(plain, 1), 1)).toBe(1)
+    expect((string.byte(save.encodeLuaData(plain), 1))).toBe(0)
+    expect((string.byte(save.encodeLuaData(whole), 1))).toBe(1)
+    expect((string.byte(save.encodeLuaData(plain, 1), 1))).toBe(1)
     expect(function() save.encodeLuaData(whole, 0) end).toThrow 'an integer is not valid in Lua serialization format version 0'
     expect(function() save.encodeLuaData(plain, 2) end).toThrow 'unsupported Lua serialization format version 2'
   end)
