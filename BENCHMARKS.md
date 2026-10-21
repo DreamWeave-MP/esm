@@ -1,6 +1,6 @@
 # TES3 benchmarks
 
-`bench/bench.jsl` times the spine through `@tes3`, the way a tool reaches it: framing a content
+`bench/bench.jsl` times the spine through `@esm`, the way a tool reaches it: framing a content
 file with and without a filter, saving, record identity, subrecords and string fields, profile
 checks, the typed codec over a record of every type, CELL references, LAND terrain, write-back,
 and OpenMW's Lua payloads. The inputs are the suite's `all_types.esp` and content built from it:
@@ -112,10 +112,10 @@ every module marked, three fresh runs of `bench/bench.jsl` each, every run's row
 its batches; a column is the median of the three, and a ratio is against the all-marked runs of
 the same session. Which functions a row spends its time in comes from `jess run --profile` of
 that row alone, unmarked. The load cost is a fresh `jess run --package <this package>
---package-path jpk` of a script that only requires `@tes3`, the two sides alternating, the
+--package-path jpk` of a script that only requires `@esm`, the two sides alternating, the
 median of five each after one warm-up.
 
-| Requiring `@tes3` | All marked | This state |
+| Requiring `@esm` | All marked | This state |
 | --- | ---: | ---: |
 | Unmarked | 0.155 s | 0.078 s |
 | Final | 0.156 s | 0.095 s |
@@ -182,10 +182,10 @@ The rows still more than 5% slower than all marked decode, encode, or display on
 type, or edit one there and back, and their time is a long tail of per-type code no profile line
 dominates: marking more of `decode` and `encode` by function (`sub`, `numberAt`, `u8List`,
 `nameOf`, the next handler) moved none of them. Marking `decode`, `encode`, and `display` whole
-brought every row within 5% of all marked in a session of its own, and made requiring `@tes3`
+brought every row within 5% of all marked in a session of its own, and made requiring `@esm`
 0.151 s against 0.164 s all marked and 0.097 s for this state in that session: those three are
-most of what marking costs. The three load-order tools that load `@tes3` ran within this
+most of what marking costs. The three load-order tools that load `@esm` ran within this
 machine's drift of each other either way (tes3merge 1.00 s all marked, 1.02 s with the three
 whole, 0.95 s like this, in consecutive sessions), so the per-type rows give and the load wins:
 a run that decodes every record of a plugin pays up to those rows' ratio on that part of its
-work, and every run that requires `@tes3` pays about 0.05 s less.
+work, and every run that requires `@esm` pays about 0.05 s less.

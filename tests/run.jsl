@@ -4,7 +4,7 @@
 -- built here, and jess's script API contracts for terrain, record metadata, and building, on
 -- jess-omwaddon's plugin with a record of every type (`assets/all_types.esp`).
 local fs = require '@dream/fs'
-local tes3 = require '@tes3'
+local tes3 = require '@esm'
 local test = require '@jess/test'
 local expect = test.expect
 local suite = test.new()
