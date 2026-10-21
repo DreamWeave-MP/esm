@@ -1,0 +1,8 @@
+tes3 notice
+
+The record model of this package, the TES3 record and subrecord types, their fields and their
+encoding rules, was ported to Luau from the `esp` library of the tes3 crate by Greatness7
+(https://github.com/Greatness7/tes3), and held to that library's output while it was ported.
+
+tes3 is licensed under MIT OR Apache-2.0. Its MIT license, with its copyright notice, is
+reproduced in tes3-LICENSE-MIT.txt in this folder, as that license requires.

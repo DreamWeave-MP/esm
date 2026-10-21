@@ -9,6 +9,9 @@ TES3 content in Luau: Morrowind and OpenMW plugins (`.esp`, `.esm`, `.omwaddon`)
 is decoded. `plugin:decode(i)` reads a record into the table jess-omwaddon's serde shape gives
 (field names camelCase), `encode` writes such a table back as record bytes, and `plugin:save()`
 copies every untouched record's original bytes, so an unedited plugin saves byte for byte.
+
+The record model is a port of the `esp` library of the tes3 crate by Greatness7 (MIT OR
+Apache-2.0); LICENSES/tes3-NOTICE.txt has the attribution.
 ]]
 
 local Decode = require '@self/decode'
