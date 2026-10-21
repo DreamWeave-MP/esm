@@ -1,0 +1,49 @@
+{
+  "schema_version": "3",
+  "document": "lock",
+  "project": "4a20d171-25a6-471f-8e22-6e554c9e859c",
+  "note": "Written by CI when a release tag is pushed: what each published release's archive contains. Do not edit.",
+  "releases": [
+    {
+      "version": "0.1.0",
+      "locked_from": "6128ac3ba9809e6d29430afbbaa91a11c7d014da",
+      "artifacts": [
+        {
+          "id": "jpk",
+          "format": "jpk",
+          "filename": "org.dreamweave.esm-0.1.0.jpk",
+          "media_type": "application/vnd.jess.jpk",
+          "size": 151990,
+          "digests": {
+            "sha256": "2d139f7a5af74d9730ee8ebc4469ba32cfe0924b5aa54db037d9ff91e6db0b3a"
+          },
+          "jess": {
+            "package": "org.dreamweave.esm",
+            "jess_api": "1",
+            "content_digest": "9556ec3f108f888c6d93cab21ca3937f3b96b048dfa75693f270be6882c4c72f",
+            "dependencies": {}
+          }
+        }
+      ],
+      "runtimes": {},
+      "platforms": [],
+      "provides": [],
+      "relationships": [],
+      "components": [
+        {
+          "id": "main",
+          "name": "esm",
+          "path": ".",
+          "required": true,
+          "default": true,
+          "requires": [],
+          "conflicts": [],
+          "suggested_with": []
+        }
+      ],
+      "groups": [],
+      "extensions": {},
+      "critical_extensions": []
+    }
+  ]
+}
